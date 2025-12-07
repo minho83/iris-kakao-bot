@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 IRIS_URL = os.getenv('IRIS_URL', 'http://192.168.0.80:3000')
-RAG_URL = os.getenv('RAG_URL', "http://host.docker.internal:8100")
+RAG_URL = os.getenv('RAG_URL', "http://localhost:8100")
 
 # 요청 딜레이 관리를 위한 변수
 last_request_time = 0
@@ -114,13 +114,13 @@ def webhook():
             if question:
                 response_msg = handle_rag_question(question, sender, "질문")
             else:
-                response_msg = "질문을 입력해주세요. 예: !질문 기사 스탯 어떻게 찍어?"
+                response_msg = "질문을 입력해주세요. 예: !질문 무한의탑탑?"
         elif msg.startswith("!검색"):
             query = msg[3:].strip()
             if query:
                 response_msg = handle_rag_question(query, sender, "검색")
             else:
-                response_msg = "검색어를 입력해주세요. 예: !검색 초보 사냥터 추천"
+                response_msg = "검색어를 입력해주세요. 예: !검색 1서클 퀘스트트"
         elif msg_lower == "안녕":
             response_msg = f"안녕하세요 {sender}님!"
         elif msg_lower == "시간":
