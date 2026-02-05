@@ -775,7 +775,8 @@ DASHBOARD_HTML = '''
 
     <script>
         let chart = null;
-        const WIKIBOT_URL = '{{ wikibot_url }}';
+        // 브라우저에서 접속한 호스트 기준으로 wikibot URL 설정
+        const WIKIBOT_URL = 'http://' + window.location.hostname + ':8100';
 
         async function loadStats() {
             try {
