@@ -951,5 +951,42 @@ def webhook():
         return jsonify({"status": "error"}), 500
 
 
+def send_startup_notification():
+    """서버 시작 시 관리자에게 알림 전송"""
+    import threading
+
+    def notify():
+        # wikibot이 준비될 때까지 대기
+        time.sleep(10)
+
+        try:
+            # 관리자 목록 조회
+            resp = requests.get(
+                f"{WIKIBOT_URL}/api/nickname/admins",
+                timeout=10,
+            )
+            data = resp.json()
+
+            if data.get("success"):
+                admins = data.get("admins", [])
+                admin_rooms = data.get("admin_rooms", [])
+
+                startup_msg = "🤖 서버가 재시작되었습니다.\n" + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                # 관리자 방에 알림 전송
+                for room_id in admin_rooms:
+                    send_reply(room_id, startup_msg)
+                    logger.info(f"Startup notification sent to room: {room_id}")
+                    time.sleep(1)  # 딜레이
+
+        except Exception as e:
+            logger.error(f"Startup notification error: {e}")
+
+    # 백그라운드 스레드로 실행
+    thread = threading.Thread(target=notify, daemon=True)
+    thread.start()
+
+
 if __name__ == '__main__':
+    send_startup_notification()
     app.run(host='0.0.0.0', port=5000)
