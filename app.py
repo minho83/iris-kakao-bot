@@ -136,6 +136,10 @@ _room_cache = {}
 _room_cache_time = 0
 ROOM_CACHE_TTL = 300  # 5분
 
+# 파티방 설정 캐시
+_party_room_cache = {}
+_party_room_cache_time = 0
+
 
 def check_trade_room(chat_id):
     """방 설정 조회 (캐시). 반환: {'collect': bool} 또는 None"""
@@ -162,6 +166,50 @@ def check_trade_room(chat_id):
         return room
     except Exception:
         return None  # 통신 오류 시 캐시하지 않음 → 다음 요청에서 재시도
+
+
+def check_party_room(chat_id):
+    """파티방 설정 조회 (캐시). 반환: {'collect': bool} 또는 None"""
+    global _party_room_cache, _party_room_cache_time
+    now = time.time()
+    if now - _party_room_cache_time > ROOM_CACHE_TTL:
+        _party_room_cache = {}
+        _party_room_cache_time = now
+
+    if chat_id in _party_room_cache:
+        return _party_room_cache[chat_id]
+
+    try:
+        resp = requests.post(
+            f"{WIKIBOT_URL}/api/party/room-check",
+            json={"room_id": chat_id},
+            timeout=5,
+        )
+        data = resp.json()
+        if not data.get("success"):
+            return None
+        room = data.get("room")
+        _party_room_cache[chat_id] = room
+        return room
+    except Exception:
+        return None
+
+
+def collect_party_message(msg, sender, chat_id):
+    """파티방 메시지를 wikibot에 전달하여 파티 수집"""
+    try:
+        sender_name = sender.split('/')[0].strip() if '/' in sender else sender
+        requests.post(
+            f"{WIKIBOT_URL}/api/party/collect",
+            json={
+                "message": msg,
+                "sender_name": sender_name,
+                "room_id": chat_id,
+            },
+            timeout=5,
+        )
+    except Exception as e:
+        logger.error(f"파티 수집 오류: {e}")
 
 
 def collect_trade_message(msg, sender, chat_id):
@@ -376,6 +424,72 @@ def handle_admin_command(msg, sender_id, room_id=None):
     if msg.startswith("!가격설정"):
         return "사용법:\n!가격설정 추가 [room_id] [방이름] - 조회만\n!가격설정 수집 [room_id] [방이름] - 수집+조회\n!가격설정 제거 [room_id]\n!가격설정 목록"
 
+    # ── 파티방 설정 ──
+    if msg.startswith("!파티설정 추가") or msg.startswith("!파티설정 수집"):
+        is_collect = msg.startswith("!파티설정 수집")
+        parts = msg.split()
+        if len(parts) < 3:
+            return "사용법: !파티설정 추가 [room_id] [방이름(선택)]\n!파티설정 수집 [room_id] [방이름(선택)]\n\n추가: 파티 조회만 가능\n수집: 파티 수집 + 조회"
+        target_room = parts[2]
+        room_name = " ".join(parts[3:]) if len(parts) > 3 else ""
+        try:
+            resp = requests.post(
+                f"{WIKIBOT_URL}/api/party/rooms",
+                json={"admin_id": sender_id, "room_id": target_room, "room_name": room_name, "collect": is_collect},
+                timeout=5,
+            )
+            data = resp.json()
+            # 캐시 초기화
+            _party_room_cache.clear()
+            return data.get("message", "처리 완료")
+        except Exception as e:
+            logger.error(f"파티 방 추가 오류: {e}")
+            return "파티 방 추가 중 오류가 발생했습니다."
+
+    if msg.startswith("!파티설정 제거"):
+        parts = msg.split()
+        if len(parts) < 3:
+            return "사용법: !파티설정 제거 [room_id]"
+        target_room = parts[2]
+        try:
+            resp = requests.delete(
+                f"{WIKIBOT_URL}/api/party/rooms/{target_room}",
+                json={"admin_id": sender_id},
+                timeout=5,
+            )
+            data = resp.json()
+            _party_room_cache.clear()
+            return data.get("message", "처리 완료")
+        except Exception as e:
+            logger.error(f"파티 방 제거 오류: {e}")
+            return "파티 방 제거 중 오류가 발생했습니다."
+
+    if msg.startswith("!파티설정 목록"):
+        try:
+            resp = requests.get(
+                f"{WIKIBOT_URL}/api/party/rooms",
+                params={"admin_id": sender_id},
+                timeout=5,
+            )
+            data = resp.json()
+            if not data.get("success"):
+                return data.get("message", "조회 실패")
+            rooms = data.get("rooms", [])
+            if not rooms:
+                return "설정된 파티 방이 없습니다."
+            lines = ["[파티 방 목록]"]
+            for r in rooms:
+                mode = "수집+조회" if r.get("collect") else "조회만"
+                name = r.get("room_name") or r.get("room_id")
+                lines.append(f"- {name} ({r.get('room_id')}) [{mode}]")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"파티 방 목록 오류: {e}")
+            return "파티 방 목록 조회 중 오류가 발생했습니다."
+
+    if msg.startswith("!파티설정"):
+        return "사용법:\n!파티설정 추가 [room_id] [방이름] - 조회만\n!파티설정 수집 [room_id] [방이름] - 수집+조회\n!파티설정 제거 [room_id]\n!파티설정 목록"
+
     # ── 별칭(줄임말) 관리 ──
     if msg.startswith("!별칭 추가") or msg.startswith("!별칭추가"):
         parts = msg.split()
@@ -582,13 +696,66 @@ def webhook():
         is_collect_room = trade_room and trade_room.get('collect')
         is_price_room = trade_room is not None  # 수집방 또는 조회방
 
+        # 파티방 설정 조회
+        party_room = check_party_room(chat_id)
+        is_party_collect_room = party_room and party_room.get('collect')
+        is_party_room = party_room is not None
+
         # ── 닉네임 변경 체크 (수집방 제외) ──
         if not is_collect_room and user_id and chat_id:
             notification = check_nickname(sender, user_id, chat_id)
             if notification:
                 send_reply(chat_id, notification)
 
-        # ── 수집방: 자동 수집 + !가격만 응답 ──
+        # ── 파티 수집방: 자동 수집 + !파티만 응답 ──
+        if is_party_collect_room:
+            if not msg_stripped.startswith('!'):
+                collect_party_message(msg, sender, chat_id)
+                return jsonify({"status": "ok"})
+
+            # 파티 수집방에서도 관리자 명령 허용
+            if msg_stripped.startswith("!파티설정"):
+                result = handle_admin_command(msg_stripped, user_id, room_id=chat_id)
+                if result:
+                    send_reply(chat_id, result)
+                return jsonify({"status": "ok"})
+
+            # 파티 수집방에서는 !파티만 허용
+            if msg_stripped.startswith("!파티"):
+                # !파티 [날짜] [직업] 파싱
+                args = msg_stripped[3:].strip()
+                date_arg = None
+                job_arg = None
+
+                if args:
+                    job_keywords = ['전사', '데빌', '도적', '법사', '직자', '도가']
+                    parts = args.split()
+                    for part in parts:
+                        if any(job in part for job in job_keywords):
+                            job_arg = part
+                        elif part in ['오늘', '내일'] or '/' in part or '월' in part:
+                            date_arg = part
+
+                try:
+                    payload = {}
+                    if date_arg:
+                        payload["date"] = date_arg
+                    if job_arg:
+                        payload["job"] = job_arg
+
+                    resp = requests.post(
+                        f"{WIKIBOT_URL}/api/party/query",
+                        json=payload,
+                        timeout=10,
+                    )
+                    data = resp.json()
+                    send_reply(chat_id, data.get("answer", "파티 정보가 없습니다."))
+                except Exception as e:
+                    logger.error(f"파티 조회 오류: {e}")
+                    send_reply(chat_id, "파티 조회에 실패했습니다.")
+            return jsonify({"status": "ok"})
+
+        # ── 거래 수집방: 자동 수집 + !가격만 응답 ──
         if is_collect_room:
             if not msg_stripped.startswith('!'):
                 collect_trade_message(msg, sender, chat_id)
@@ -622,7 +789,7 @@ def webhook():
             response_msg = f"[방 정보]\nroom: {room}\nchat_id: {chat_id}\nsender: {sender}\nuser_id: {user_id}"
 
         # 관리자 명령 (DM 또는 그룹)
-        elif msg_stripped.startswith("!관리자등록") or msg_stripped.startswith("!닉변감지") or msg_stripped.startswith("!닉변이력") or msg_stripped.startswith("!가격설정") or msg_stripped.startswith("!별칭") or msg_stripped.startswith("!시세정리"):
+        elif msg_stripped.startswith("!관리자등록") or msg_stripped.startswith("!닉변감지") or msg_stripped.startswith("!닉변이력") or msg_stripped.startswith("!가격설정") or msg_stripped.startswith("!별칭") or msg_stripped.startswith("!시세정리") or msg_stripped.startswith("!파티설정"):
             result = handle_admin_command(msg_stripped, user_id, room_id=chat_id)
             if result:
                 response_msg = result
@@ -670,6 +837,44 @@ def webhook():
             result = ask_wikibot("/ask/update", query)
             response_msg = format_search_result(result, sender)
 
+        # 파티 조회 (설정된 방에서만)
+        elif msg_stripped.startswith("!파티") and not msg_stripped.startswith("!파티설정"):
+            if is_party_room:
+                # !파티 [날짜] [직업] 파싱
+                args = msg_stripped[3:].strip()
+                date_arg = None
+                job_arg = None
+
+                if args:
+                    # 직업 키워드 체크
+                    job_keywords = ['전사', '데빌', '도적', '법사', '직자', '도가']
+                    parts = args.split()
+                    for part in parts:
+                        if any(job in part for job in job_keywords):
+                            job_arg = part
+                        elif part in ['오늘', '내일'] or '/' in part or '월' in part:
+                            date_arg = part
+
+                try:
+                    payload = {}
+                    if date_arg:
+                        payload["date"] = date_arg
+                    if job_arg:
+                        payload["job"] = job_arg
+
+                    resp = requests.post(
+                        f"{WIKIBOT_URL}/api/party/query",
+                        json=payload,
+                        timeout=10,
+                    )
+                    data = resp.json()
+                    response_msg = data.get("answer", "파티 정보가 없습니다.")
+                except Exception as e:
+                    logger.error(f"파티 조회 오류: {e}")
+                    response_msg = "파티 조회에 실패했습니다."
+            else:
+                response_msg = "파티 조회가 활성화된 방에서만 사용 가능합니다.\n(관리자: !파티설정 추가/수집 [room_id])"
+
         # 가격 조회 (설정된 방에서만)
         elif msg_stripped.startswith("!가격") and not msg_stripped.startswith("!가격설정"):
             if is_price_room:
@@ -705,6 +910,8 @@ def webhook():
             ]
             if is_price_room:
                 lines.append("!가격 [아이템명] - 거래 시세 조회")
+            if is_party_room:
+                lines.append("!파티 [날짜] [직업] - 빈자리 파티 조회")
             lines.append("")
             lines.append("💡 &로 여러 개 동시 검색 가능")
             lines.append("예: !아이템 오리하르콘 & 미스릴")
@@ -714,33 +921,17 @@ def webhook():
         elif msg_stripped == "!관리자":
             response_msg = """🔧 관리자 명령어
 
-[가격 시세 조회]
-!가격 [아이템명] - 강화별 시세 요약
-  (판매/구매 평균 분리 표시)
-!가격 5강 [아이템명] - 특정 강화 상세
-  예: !가격 암목, !가격 5강 나겔반지
+[가격]
+!가격 [아이템명] - 시세 조회
+!가격설정 수집/추가/제거/목록
 
-[가격 방 설정]
-!가격설정 수집 [방ID] [방이름]
-  → 거래방 (시세 자동 수집 + 조회)
-!가격설정 추가 [방ID] [방이름]
-  → 조회 전용방 (조회만 가능)
-!가격설정 제거 [방ID]
-!가격설정 목록
+[파티]
+!파티 [날짜] [직업] - 빈자리 조회
+!파티설정 수집/추가/제거/목록
 
-[별칭/줄임말 관리]
-!별칭 추가 [줄임말] [정식명]
-  예: !별칭 추가 강세 강화된세피어링
-!별칭 삭제 [줄임말]
-!별칭 목록
-
-[데이터 관리]
-!시세정리 - 전체 데이터 정리 (LOD_DB 검증)
-!시세정리 [날짜] - 특정일 이후 정리
-  예: !시세정리 2026-02-03
-  (매일 04:00 자동 실행)
-
-[닉네임 감시]
+[기타]
+!별칭 추가/삭제/목록
+!시세정리 - 가격 데이터 정리
 !닉변감지 추가/제거/목록
 !닉변이력 [방ID]
 
