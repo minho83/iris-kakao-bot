@@ -607,12 +607,16 @@ def handle_admin_command(msg, sender_id, room_id=None):
             return "권한 확인 중 오류가 발생했습니다."
 
         try:
+            # 재시작 완료 알림을 보낼 방 저장
+            if room_id:
+                save_restart_room(room_id)
+
             subprocess.Popen(
                 ["bash", DEPLOY_SCRIPT],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            logger.info(f"서버 재시작 실행 (by {sender_id})")
+            logger.info(f"서버 재시작 실행 (by {sender_id}) in room {room_id}")
             return "서버 재시작을 시작합니다. (git pull → 빌드 → 재시작)"
         except Exception as e:
             logger.error(f"서버 재시작 오류: {e}")
@@ -951,8 +955,21 @@ def webhook():
         return jsonify({"status": "error"}), 500
 
 
+# 재시작 요청 저장 파일
+RESTART_REQUEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".restart_room")
+
+
+def save_restart_room(room_id):
+    """재시작 요청한 방 ID 저장"""
+    try:
+        with open(RESTART_REQUEST_FILE, 'w') as f:
+            f.write(room_id)
+    except Exception as e:
+        logger.error(f"Failed to save restart room: {e}")
+
+
 def send_startup_notification():
-    """서버 시작 시 관리자에게 알림 전송"""
+    """서버 시작 시 재시작 요청한 방에 알림 전송"""
     import threading
 
     def notify():
@@ -960,24 +977,20 @@ def send_startup_notification():
         time.sleep(10)
 
         try:
-            # 관리자 목록 조회
-            resp = requests.get(
-                f"{WIKIBOT_URL}/api/nickname/admins",
-                timeout=10,
-            )
-            data = resp.json()
+            # 재시작 요청한 방 확인
+            if not os.path.exists(RESTART_REQUEST_FILE):
+                return
 
-            if data.get("success"):
-                admins = data.get("admins", [])
-                admin_rooms = data.get("admin_rooms", [])
+            with open(RESTART_REQUEST_FILE, 'r') as f:
+                room_id = f.read().strip()
 
-                startup_msg = "🤖 서버가 재시작되었습니다.\n" + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if room_id:
+                startup_msg = "🤖 서버 재시작 완료\n" + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                send_reply(room_id, startup_msg)
+                logger.info(f"Restart notification sent to room: {room_id}")
 
-                # 관리자 방에 알림 전송
-                for room_id in admin_rooms:
-                    send_reply(room_id, startup_msg)
-                    logger.info(f"Startup notification sent to room: {room_id}")
-                    time.sleep(1)  # 딜레이
+            # 파일 삭제
+            os.remove(RESTART_REQUEST_FILE)
 
         except Exception as e:
             logger.error(f"Startup notification error: {e}")
