@@ -345,11 +345,12 @@ def handle_admin_command(msg, sender_id, room_id=None):
             history = data.get("history", [])
             if not history:
                 return "닉네임 변경 이력이 없습니다."
-            lines = [f"[닉네임 이력 - {target_room}]"]
-            for h in history[:30]:
-                lines.append(f"- [{h.get('detected_at')}] {h.get('sender_name')}")
-            if len(history) > 30:
-                lines.append(f"... 외 {len(history) - 30}건")
+            lines = ["[닉네임 변경 이력]"]
+            for h in history:
+                changes = h.get('changes', '')
+                last_changed = h.get('last_changed', '')[:16]  # 초 제외
+                lines.append(f"• {changes}")
+                lines.append(f"  ({last_changed})")
             return "\n".join(lines)
         except Exception as e:
             logger.error(f"이력 조회 오류: {e}")
