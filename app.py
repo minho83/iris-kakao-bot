@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
 
@@ -660,6 +660,289 @@ def handle_system_message(data, chat_id):
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "healthy"})
+
+
+# ── 대시보드 ──────────────────────────────────────────────
+
+DASHBOARD_HTML = '''
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WikiBot Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        h1 { text-align: center; margin-bottom: 30px; color: #00d9ff; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .stat-card h3 {
+            color: #00d9ff;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #fff;
+        }
+        .stat-unit { font-size: 0.5em; color: #888; }
+        .stat-detail { color: #888; font-size: 0.9em; margin-top: 10px; }
+        .chart-container {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .chart-title {
+            color: #00d9ff;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+        }
+        .status-item { display: flex; align-items: center; gap: 8px; }
+        .status-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #00ff88;
+        }
+        .status-dot.warning { background: #ffaa00; }
+        .status-dot.error { background: #ff4444; }
+        .refresh-btn {
+            background: #00d9ff;
+            color: #1a1a2e;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .refresh-btn:hover { background: #00b8d9; }
+        .last-update { color: #666; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 WikiBot Dashboard</h1>
+
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">연결 중...</span>
+            </div>
+            <div>
+                <span class="last-update" id="lastUpdate"></span>
+                <button class="refresh-btn" onclick="loadStats()">새로고침</button>
+            </div>
+        </div>
+
+        <div class="stats-grid" id="statsGrid">
+            <!-- DB 카드들이 여기에 동적으로 추가됨 -->
+        </div>
+
+        <div class="chart-container">
+            <h3 class="chart-title">📈 DB 용량 추이 (24시간)</h3>
+            <canvas id="dbChart" height="100"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        const WIKIBOT_URL = '{{ wikibot_url }}';
+
+        async function loadStats() {
+            try {
+                const resp = await fetch(WIKIBOT_URL + '/api/db/stats');
+                const data = await resp.json();
+
+                if (data.success) {
+                    updateStatusBar(true, data.uptime);
+                    renderStats(data.databases);
+                    document.getElementById('lastUpdate').textContent =
+                        '마지막 업데이트: ' + new Date().toLocaleTimeString('ko-KR');
+                }
+            } catch (e) {
+                updateStatusBar(false);
+                console.error('Stats load error:', e);
+            }
+
+            // 히스토리도 로드
+            loadHistory();
+        }
+
+        async function loadHistory() {
+            try {
+                const resp = await fetch(WIKIBOT_URL + '/api/db/history');
+                const data = await resp.json();
+                if (data.success && data.history.length > 0) {
+                    renderChart(data.history);
+                }
+            } catch (e) {
+                console.error('History load error:', e);
+            }
+        }
+
+        function updateStatusBar(connected, uptime) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+
+            if (connected) {
+                dot.className = 'status-dot';
+                const hours = Math.floor(uptime / 3600);
+                const mins = Math.floor((uptime % 3600) / 60);
+                text.textContent = `서버 정상 (가동시간: ${hours}시간 ${mins}분)`;
+            } else {
+                dot.className = 'status-dot error';
+                text.textContent = '서버 연결 실패';
+            }
+        }
+
+        function renderStats(databases) {
+            const grid = document.getElementById('statsGrid');
+            const dbNames = {
+                'trade.db': { icon: '💰', name: '거래 시세' },
+                'party.db': { icon: '🎉', name: '파티 모집' },
+                'nickname.db': { icon: '👤', name: '닉네임 감시' },
+                'notice.db': { icon: '📢', name: '공지사항' }
+            };
+
+            let html = '';
+            for (const [db, info] of Object.entries(databases)) {
+                const meta = dbNames[db] || { icon: '📁', name: db };
+                const sizeMb = parseFloat(info.size_mb);
+                const sizeClass = sizeMb > 50 ? 'warning' : '';
+
+                let detail = '';
+                if (info.records !== undefined) {
+                    detail = `${info.records.toLocaleString()} 레코드`;
+                } else if (info.rooms !== undefined) {
+                    detail = `${info.rooms} 감시방`;
+                }
+
+                html += `
+                    <div class="stat-card">
+                        <h3>${meta.icon} ${meta.name}</h3>
+                        <div class="stat-value ${sizeClass}">
+                            ${info.size_mb}<span class="stat-unit"> MB</span>
+                        </div>
+                        <div class="stat-detail">${detail}</div>
+                    </div>
+                `;
+            }
+            grid.innerHTML = html;
+        }
+
+        function renderChart(history) {
+            const ctx = document.getElementById('dbChart').getContext('2d');
+
+            const labels = history.map(h => {
+                const d = new Date(h.timestamp);
+                return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+            });
+
+            const toMB = (bytes) => (bytes / 1024 / 1024).toFixed(2);
+
+            const datasets = [
+                {
+                    label: 'trade.db',
+                    data: history.map(h => toMB(h['trade.db'] || 0)),
+                    borderColor: '#ff6384',
+                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                },
+                {
+                    label: 'party.db',
+                    data: history.map(h => toMB(h['party.db'] || 0)),
+                    borderColor: '#36a2eb',
+                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                },
+                {
+                    label: 'nickname.db',
+                    data: history.map(h => toMB(h['nickname.db'] || 0)),
+                    borderColor: '#ffce56',
+                    backgroundColor: 'rgba(255, 206, 86, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                }
+            ];
+
+            if (chart) {
+                chart.data.labels = labels;
+                chart.data.datasets = datasets;
+                chart.update();
+            } else {
+                chart = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels, datasets },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                labels: { color: '#eee' }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                ticks: { color: '#888' },
+                                grid: { color: '#333' }
+                            },
+                            y: {
+                                ticks: {
+                                    color: '#888',
+                                    callback: (v) => v + ' MB'
+                                },
+                                grid: { color: '#333' }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // 초기 로드
+        loadStats();
+
+        // 1분마다 자동 새로고침
+        setInterval(loadStats, 60000);
+    </script>
+</body>
+</html>
+'''
+
+
+@app.route('/dashboard', methods=['GET'])
+def dashboard():
+    return render_template_string(DASHBOARD_HTML, wikibot_url=WIKIBOT_URL)
 
 
 @app.route('/webhook', methods=['POST'])
