@@ -20,10 +20,15 @@ echo "[deploy] 기존 컨테이너 중지 및 제거..."
 docker stop "$CONTAINER_NAME" 2>/dev/null
 docker rm "$CONTAINER_NAME" 2>/dev/null
 
+echo "[deploy] 데이터 디렉토리 확인..."
+DATA_DIR="$REPO_DIR/data"
+mkdir -p "$DATA_DIR"
+
 echo "[deploy] 새 컨테이너 시작..."
 docker run -d \
   --name "$CONTAINER_NAME" \
   -p 3000:3000 \
+  -v "$DATA_DIR:/app/data" \
   --restart unless-stopped \
   "$CONTAINER_NAME"
 
