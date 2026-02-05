@@ -1,0 +1,16 @@
+name: Trigger wikibot-kakao Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  trigger-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger wikibot-kakao deployment
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          repository: minho83/wikibot-kakao
+          event-type: iris-kakao-bot-updated
