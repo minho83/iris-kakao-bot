@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import subprocess
 import time
 from datetime import datetime
 
@@ -20,8 +19,8 @@ logger = logging.getLogger(__name__)
 IRIS_URL = os.getenv('IRIS_URL', 'http://192.168.0.80:3000')
 # wikibot-kakao 서버 주소
 WIKIBOT_URL = os.getenv('WIKIBOT_URL', 'http://localhost:8100')
-# 배포 스크립트 경로
-DEPLOY_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.sh")
+# 배포 트리거 파일 (호스트의 cron이 이 파일 감지 후 deploy.sh 실행)
+DEPLOY_TRIGGER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".deploy_trigger")
 
 # 요청 딜레이 관리
 last_request_time = 0
@@ -611,13 +610,11 @@ def handle_admin_command(msg, sender_id, room_id=None):
             if room_id:
                 save_restart_room(room_id)
 
-            subprocess.Popen(
-                ["bash", DEPLOY_SCRIPT],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            logger.info(f"서버 재시작 실행 (by {sender_id}) in room {room_id}")
-            return "서버 재시작을 시작합니다. (git pull → 빌드 → 재시작)"
+            # 배포 트리거 파일 생성 (호스트의 cron이 감지 후 deploy.sh 실행)
+            with open(DEPLOY_TRIGGER_FILE, 'w') as f:
+                f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            logger.info(f"서버 재시작 요청 (by {sender_id}) in room {room_id}")
+            return "서버 재시작을 시작합니다. (최대 1분 내 실행)"
         except Exception as e:
             logger.error(f"서버 재시작 오류: {e}")
             return f"서버 재시작 실패: {e}"
