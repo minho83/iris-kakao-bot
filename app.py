@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Iris (redroid) reply 엔드포인트
 IRIS_URL = os.getenv('IRIS_URL', 'http://192.168.0.80:3000')
-# wikibot-kakao 서버 주소
-WIKIBOT_URL = os.getenv('WIKIBOT_URL', 'http://wikibot-server:3000')
+# wikibot-kakao 서버 주소 (Docker wikibot-net 네트워크에서 컨테이너명으로 직접 통신)
+WIKIBOT_URL = 'http://wikibot-server:3000'
 # 배포 트리거 파일 (호스트의 cron이 이 파일 감지 후 deploy.sh 실행)
 DEPLOY_TRIGGER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".deploy_trigger")
 
