@@ -1006,7 +1006,12 @@ def webhook():
                     send_reply(chat_id, result)
                 return jsonify({"status": "ok"})
 
-            # 파티 수집방에서는 !파티만 허용
+            # 파티 수집방에서 !파티만 입력 → 웹사이트 안내
+            if msg_stripped == "!파티":
+                send_reply(chat_id, "📋 파티 빈자리 현황\n\n아래 링크에서 실시간 파티 빈자리를 확인하세요!\n👉 https://party.milddok.cc/\n\n* 어둠의전설 나겔파티 오픈톡 데이터 기반\n* 수집상태에 따라 오차가 있을 수 있습니다.")
+                return jsonify({"status": "ok"})
+
+            # 파티 수집방에서는 !파티 [인자]로 조회
             if msg_stripped.startswith("!파티"):
                 # !파티 [날짜] [직업] 파싱
                 args = msg_stripped[3:].strip()
@@ -1122,6 +1127,10 @@ def webhook():
             query = msg_stripped[5:].strip()
             result = ask_wikibot("/ask/update", query)
             response_msg = format_search_result(result, sender)
+
+        # 파티 빈자리 안내 (방 제한 없음)
+        elif msg_stripped == "!파티":
+            response_msg = "📋 파티 빈자리 현황\n\n아래 링크에서 실시간 파티 빈자리를 확인하세요!\n👉 https://party.milddok.cc/\n\n* 어둠의전설 나겔파티 오픈톡 데이터 기반\n* 수집상태에 따라 오차가 있을 수 있습니다."
 
         # 파티 조회 (설정된 방에서만)
         elif msg_stripped.startswith("!파티") and not msg_stripped.startswith("!파티설정"):
