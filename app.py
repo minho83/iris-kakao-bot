@@ -1129,7 +1129,7 @@ def webhook():
             toggled_off = toggle_key and not check_feature_toggle(toggle_key, chat_id)
 
             if toggled_off:
-                response_msg = f"{cmd_word} 기능은 현재 비활성화되어 있습니다."
+                pass  # 비활성 명령어는 무응답
 
             # 아이템 검색
             elif msg_stripped.startswith("!아이템"):
