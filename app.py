@@ -80,6 +80,36 @@ def format_search_result(result, sender):
     return response.strip()
 
 
+def check_feature_toggle(command, room_id):
+    """wikibot에 기능 토글 상태 확인. True=활성, False=비활성"""
+    try:
+        resp = requests.post(
+            f"{WIKIBOT_URL}/api/features/check",
+            json={"command": command, "room_id": room_id},
+            timeout=3,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("enabled", True)
+    except Exception:
+        pass
+    return True  # 오류 시 기본 활성
+
+
+# 명령어 → 토글 키 매핑
+COMMAND_TOGGLE_MAP = {
+    "!아이템": "!검색",
+    "!스킬": "!검색",
+    "!마법": "!검색",
+    "!검색": "!검색",
+    "!질문": "!검색",
+    "!현자": "!현자",
+    "!공지": "!공지",
+    "!업데이트": "!업데이트",
+    "!파티": "!파티",
+    "!통계": "!통계",
+}
+
+
 def multi_search(endpoint, query, sender):
     """& 구분자로 여러 검색어 동시 검색"""
     queries = [q.strip() for q in query.split("&") if q.strip()]
@@ -1091,130 +1121,138 @@ def webhook():
             if result:
                 response_msg = result
 
-        # 아이템 검색
-        elif msg_stripped.startswith("!아이템"):
-            query = msg_stripped[4:].strip()
-            if query:
-                response_msg = multi_search("/ask/item", query, sender)
-            else:
-                response_msg = "검색어를 입력해주세요. 예: !아이템 오리하르콘"
+        # ── 기능 토글 체크 (관리자/도움말/방확인 제외) ──
+        # 토글 대상 명령어는 비활성 여부 먼저 확인
+        elif msg_stripped.startswith("!"):
+            cmd_word = msg_stripped.split()[0] if msg_stripped.split() else ""
+            toggle_key = COMMAND_TOGGLE_MAP.get(cmd_word)
+            toggled_off = toggle_key and not check_feature_toggle(toggle_key, chat_id)
 
-        # 스킬/마법 검색
-        elif msg_stripped.startswith("!스킬") or msg_stripped.startswith("!마법"):
-            query = msg_stripped[3:].strip()
-            if query:
-                response_msg = multi_search("/ask/skill", query, sender)
-            else:
-                response_msg = "검색어를 입력해주세요. 예: !스킬 메테오"
+            if toggled_off:
+                response_msg = f"{cmd_word} 기능은 현재 비활성화되어 있습니다."
 
-        # 게시판 검색
-        elif msg_stripped.startswith("!현자"):
-            query = msg_stripped[4:].strip()
-            if query:
-                result = ask_wikibot("/ask/community", query)
-                response_msg = format_search_result(result, sender)
-            else:
-                response_msg = "검색어를 입력해주세요. 예: !현자 발록"
+            # 아이템 검색
+            elif msg_stripped.startswith("!아이템"):
+                query = msg_stripped[4:].strip()
+                if query:
+                    response_msg = multi_search("/ask/item", query, sender)
+                else:
+                    response_msg = "검색어를 입력해주세요. 예: !아이템 오리하르콘"
 
-        # 공지사항
-        elif msg_stripped.startswith("!공지"):
-            query = msg_stripped[3:].strip()
-            result = ask_wikibot("/ask/notice", query)
-            response_msg = format_search_result(result, sender)
-
-        # 업데이트
-        elif msg_stripped.startswith("!업데이트"):
-            query = msg_stripped[5:].strip()
-            result = ask_wikibot("/ask/update", query)
-            response_msg = format_search_result(result, sender)
-
-        # 파티 빈자리 안내 (방 제한 없음)
-        elif msg_stripped == "!파티":
-            response_msg = "📋 파티 빈자리 현황\n\n아래 링크에서 실시간 파티 빈자리를 확인하세요!\n👉 https://party.milddok.cc/\n\n* 어둠의전설 나겔파티 오픈톡 데이터 기반\n* 수집상태에 따라 오차가 있을 수 있습니다."
-
-        # 파티 조회 (설정된 방에서만)
-        elif msg_stripped.startswith("!파티") and not msg_stripped.startswith("!파티설정"):
-            if is_party_room:
-                # !파티 [날짜] [직업] 파싱
-                args = msg_stripped[3:].strip()
-                date_arg = None
-                job_arg = None
-
-                if args:
-                    # 직업 키워드 체크
-                    job_keywords = ['전사', '데빌', '도적', '법사', '직자', '도가']
-                    parts = args.split()
-                    for part in parts:
-                        if any(job in part for job in job_keywords):
-                            job_arg = part
-                        elif part in ['오늘', '내일'] or '/' in part or '월' in part:
-                            date_arg = part
-
-                try:
-                    payload = {}
-                    if date_arg:
-                        payload["date"] = date_arg
-                    if job_arg:
-                        payload["job"] = job_arg
-
-                    resp = requests.post(
-                        f"{WIKIBOT_URL}/api/party/query",
-                        json=payload,
-                        timeout=10,
-                    )
-                    data = resp.json()
-                    response_msg = data.get("answer", "파티 정보가 없습니다.")
-                except Exception as e:
-                    logger.error(f"파티 조회 오류: {e}")
-                    response_msg = "파티 조회에 실패했습니다."
-            else:
-                response_msg = "파티 조회가 활성화된 방에서만 사용 가능합니다.\n(관리자: !파티설정 추가/수집 [room_id])"
-
-        # 가격 조회 (설정된 방에서만)
-        elif msg_stripped.startswith("!가격") and not msg_stripped.startswith("!가격설정"):
-            if is_price_room:
+            # 스킬/마법 검색
+            elif msg_stripped.startswith("!스킬") or msg_stripped.startswith("!마법"):
                 query = msg_stripped[3:].strip()
                 if query:
-                    result = ask_wikibot("/api/trade/query", query)
-                    if result:
-                        response_msg = result.get("answer", "가격 정보가 없습니다.")
-                    else:
-                        response_msg = "가격 조회에 실패했습니다."
+                    response_msg = multi_search("/ask/skill", query, sender)
                 else:
-                    response_msg = "사용법: !가격 [아이템명]\n예: !가격 암목\n예: !가격 5강 나겔반지"
+                    response_msg = "검색어를 입력해주세요. 예: !스킬 메테오"
 
-        # 통합 검색
-        elif msg_stripped.startswith("!검색") or msg_stripped.startswith("!질문"):
-            query = msg_stripped[3:].strip()
-            if query:
-                result = ask_wikibot("/ask", query)
+            # 게시판 검색
+            elif msg_stripped.startswith("!현자"):
+                query = msg_stripped[4:].strip()
+                if query:
+                    result = ask_wikibot("/ask/community", query)
+                    response_msg = format_search_result(result, sender)
+                else:
+                    response_msg = "검색어를 입력해주세요. 예: !현자 발록"
+
+            # 공지사항
+            elif msg_stripped.startswith("!공지"):
+                query = msg_stripped[3:].strip()
+                result = ask_wikibot("/ask/notice", query)
                 response_msg = format_search_result(result, sender)
-            else:
-                response_msg = "검색어를 입력해주세요. 예: !검색 메테오"
 
-        # 도움말
-        elif msg_stripped == "!도움말" or msg_stripped == "도움말":
-            lines = [
-                "📋 명령어 안내",
-                "!아이템 [이름] - 아이템 검색",
-                "!스킬 [이름] - 스킬/마법 검색",
-                "!현자 [키워드] - 현자게시판[세오]내 글 재목 검색",
-                "!검색 [키워드] - 통합 검색",
-                "!공지 [날짜] - 공지사항 (예: !공지 2/5)",
-                "!업데이트 [날짜] - 업데이트 내역",
-            ]
-            if is_price_room:
-                lines.append("!가격 [아이템명] - 거래 시세 조회")
-            if is_party_room:
-                lines.append("!파티 [날짜] [직업] - 빈자리 파티 조회")
-            lines.append("")
-            lines.append("💡 &로 여러 개 동시 검색 가능")
-            lines.append("예: !아이템 오리하르콘 & 미스릴")
-            response_msg = "\n".join(lines)
+            # 업데이트
+            elif msg_stripped.startswith("!업데이트"):
+                query = msg_stripped[5:].strip()
+                result = ask_wikibot("/ask/update", query)
+                response_msg = format_search_result(result, sender)
 
-        # 관리자 도움말
-        elif msg_stripped == "!관리자":
-            response_msg = """🔧 관리자 명령어
+            # 파티 빈자리 안내 (방 제한 없음)
+            elif msg_stripped == "!파티":
+                response_msg = "📋 파티 빈자리 현황\n\n아래 링크에서 실시간 파티 빈자리를 확인하세요!\n👉 https://party.milddok.cc/\n\n* 어둠의전설 나겔파티 오픈톡 데이터 기반\n* 수집상태에 따라 오차가 있을 수 있습니다."
+
+            # 파티 조회 (설정된 방에서만)
+            elif msg_stripped.startswith("!파티") and not msg_stripped.startswith("!파티설정"):
+                if is_party_room:
+                    args = msg_stripped[3:].strip()
+                    date_arg = None
+                    job_arg = None
+
+                    if args:
+                        job_keywords = ['전사', '데빌', '도적', '법사', '직자', '도가']
+                        parts = args.split()
+                        for part in parts:
+                            if any(job in part for job in job_keywords):
+                                job_arg = part
+                            elif part in ['오늘', '내일'] or '/' in part or '월' in part:
+                                date_arg = part
+
+                    try:
+                        payload = {}
+                        if date_arg:
+                            payload["date"] = date_arg
+                        if job_arg:
+                            payload["job"] = job_arg
+
+                        resp = requests.post(
+                            f"{WIKIBOT_URL}/api/party/query",
+                            json=payload,
+                            timeout=10,
+                        )
+                        data = resp.json()
+                        response_msg = data.get("answer", "파티 정보가 없습니다.")
+                    except Exception as e:
+                        logger.error(f"파티 조회 오류: {e}")
+                        response_msg = "파티 조회에 실패했습니다."
+                else:
+                    response_msg = "파티 조회가 활성화된 방에서만 사용 가능합니다.\n(관리자: !파티설정 추가/수집 [room_id])"
+
+            # 가격 조회 (설정된 방에서만)
+            elif msg_stripped.startswith("!가격") and not msg_stripped.startswith("!가격설정"):
+                if is_price_room:
+                    query = msg_stripped[3:].strip()
+                    if query:
+                        result = ask_wikibot("/api/trade/query", query)
+                        if result:
+                            response_msg = result.get("answer", "가격 정보가 없습니다.")
+                        else:
+                            response_msg = "가격 조회에 실패했습니다."
+                    else:
+                        response_msg = "사용법: !가격 [아이템명]\n예: !가격 암목\n예: !가격 5강 나겔반지"
+
+            # 통합 검색
+            elif msg_stripped.startswith("!검색") or msg_stripped.startswith("!질문"):
+                query = msg_stripped[3:].strip()
+                if query:
+                    result = ask_wikibot("/ask", query)
+                    response_msg = format_search_result(result, sender)
+                else:
+                    response_msg = "검색어를 입력해주세요. 예: !검색 메테오"
+
+            # 도움말
+            elif msg_stripped == "!도움말":
+                lines = [
+                    "📋 명령어 안내",
+                    "!아이템 [이름] - 아이템 검색",
+                    "!스킬 [이름] - 스킬/마법 검색",
+                    "!현자 [키워드] - 현자게시판[세오]내 글 재목 검색",
+                    "!검색 [키워드] - 통합 검색",
+                    "!공지 [날짜] - 공지사항 (예: !공지 2/5)",
+                    "!업데이트 [날짜] - 업데이트 내역",
+                ]
+                if is_price_room:
+                    lines.append("!가격 [아이템명] - 거래 시세 조회")
+                if is_party_room:
+                    lines.append("!파티 [날짜] [직업] - 빈자리 파티 조회")
+                lines.append("")
+                lines.append("💡 &로 여러 개 동시 검색 가능")
+                lines.append("예: !아이템 오리하르콘 & 미스릴")
+                response_msg = "\n".join(lines)
+
+            # 관리자 도움말
+            elif msg_stripped == "!관리자":
+                response_msg = """🔧 관리자 명령어
 
 [가격]
 !가격 [아이템명] - 시세 조회
@@ -1234,6 +1272,26 @@ def webhook():
 !관리자등록 - 최초 관리자 등록
 !서버재시작 - 서버 재배포
 !방확인 - 현재 방 ID 확인"""
+
+        # "도움말" (느낌표 없이)
+        elif msg_stripped == "도움말":
+            lines = [
+                "📋 명령어 안내",
+                "!아이템 [이름] - 아이템 검색",
+                "!스킬 [이름] - 스킬/마법 검색",
+                "!현자 [키워드] - 현자게시판[세오]내 글 재목 검색",
+                "!검색 [키워드] - 통합 검색",
+                "!공지 [날짜] - 공지사항 (예: !공지 2/5)",
+                "!업데이트 [날짜] - 업데이트 내역",
+            ]
+            if is_price_room:
+                lines.append("!가격 [아이템명] - 거래 시세 조회")
+            if is_party_room:
+                lines.append("!파티 [날짜] [직업] - 빈자리 파티 조회")
+            lines.append("")
+            lines.append("💡 &로 여러 개 동시 검색 가능")
+            lines.append("예: !아이템 오리하르콘 & 미스릴")
+            response_msg = "\n".join(lines)
 
         # 응답 전송
         if response_msg:
