@@ -73,7 +73,7 @@ def format_search_result(result, sender):
     filtered = [s for s in sources if s.get("url")]
     if filtered:
         response += "\n\n📚 관련 링크:\n"
-        for s in filtered[:2]:
+        for s in filtered[:5]:
             if s.get("url"):
                 response += f"• {s.get('title', '링크')}\n  🔗 {s['url']}\n"
 
