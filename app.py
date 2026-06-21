@@ -48,8 +48,12 @@ _party_room_cache_time = 0
 ROOM_CACHE_TTL = 300  # 5분
 
 
-def check_party_room(chat_id):
-    """파티방 설정 조회(캐시). 반환: {'collect': bool} 또는 None(미등록)"""
+def check_party_room(chat_id, msg='', sender=''):
+    """파티방 설정 조회(캐시). 반환: {'collect': bool} 또는 None(미등록)
+
+    캐시 미스 시에만 room-check 호출 → 미등록 방 자동발견용 샘플(msg/sender)을
+    함께 전달한다(5분당 1회). wikibot은 미등록 방만 seen_rooms에 기록한다.
+    """
     global _party_room_cache, _party_room_cache_time
     now = time.time()
     if now - _party_room_cache_time > ROOM_CACHE_TTL:
@@ -60,7 +64,7 @@ def check_party_room(chat_id):
     try:
         resp = requests.post(
             f"{WIKIBOT_URL}/api/party/room-check",
-            json={"room_id": chat_id}, timeout=5)
+            json={"room_id": chat_id, "msg": msg, "sender": sender}, timeout=5)
         data = resp.json()
         if not data.get("success"):
             return None
@@ -177,8 +181,8 @@ def webhook():
             send_reply(chat_id, handle_party_setting(msg_stripped, user_id))
             return jsonify({"status": "ok"})
 
-        # 파티방 설정 조회 (수집 여부만)
-        party_room = check_party_room(chat_id)
+        # 파티방 설정 조회 (수집 여부만) + 미등록 방 자동발견용 샘플 전달
+        party_room = check_party_room(chat_id, msg, sender)
         is_party_collect_room = bool(party_room and party_room.get('collect'))
 
         # 수집방: 일반 메시지(명령어 아님) 자동 수집
