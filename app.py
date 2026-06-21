@@ -83,32 +83,6 @@ def collect_party_message(msg, sender, chat_id):
         logger.error(f"파티 수집 오류: {e}")
 
 
-def query_party(msg_stripped):
-    """!파티 [날짜] [직업] 파싱 후 wikibot 조회 → 응답 문자열"""
-    args = msg_stripped[3:].strip()  # '!파티' 다음
-    date_arg = None
-    job_arg = None
-    if args:
-        job_keywords = ['전사', '데빌', '도적', '법사', '직자', '도가']
-        for part in args.split():
-            if any(j in part for j in job_keywords):
-                job_arg = part
-            elif part in ['오늘', '내일'] or '/' in part or '월' in part:
-                date_arg = part
-    payload = {}
-    if date_arg:
-        payload["date"] = date_arg
-    if job_arg:
-        payload["job"] = job_arg
-    try:
-        resp = requests.post(
-            f"{WIKIBOT_URL}/api/party/query", json=payload, timeout=10)
-        return resp.json().get("answer", "파티 정보가 없습니다.")
-    except Exception as e:
-        logger.error(f"파티 조회 오류: {e}")
-        return "파티 조회에 실패했습니다."
-
-
 def handle_party_setting(msg, sender_id):
     """!파티설정 추가/수집/제거/목록 (관리자)"""
     global _party_room_cache
@@ -203,23 +177,14 @@ def webhook():
             send_reply(chat_id, handle_party_setting(msg_stripped, user_id))
             return jsonify({"status": "ok"})
 
-        # 파티방 설정 조회
+        # 파티방 설정 조회 (수집 여부만)
         party_room = check_party_room(chat_id)
         is_party_collect_room = bool(party_room and party_room.get('collect'))
-        is_party_room = party_room is not None
 
         # 수집방: 일반 메시지(명령어 아님) 자동 수집
+        # 조회는 카톡 명령(!파티) 없이 웹 뷰어(party.milddok.cc)로만 제공.
         if is_party_collect_room and not msg_stripped.startswith('!'):
             collect_party_message(msg, sender, chat_id)
-            return jsonify({"status": "ok"})
-
-        # !파티 조회 (등록된 방에서만)
-        if msg_stripped.startswith("!파티"):
-            if is_party_room:
-                send_reply(chat_id, query_party(msg_stripped))
-            else:
-                send_reply(chat_id,
-                           "파티 조회가 활성화된 방이 아닙니다.\n(관리자: !파티설정 수집 [room_id])")
             return jsonify({"status": "ok"})
 
         return jsonify({"status": "ok"})
