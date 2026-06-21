@@ -5,6 +5,7 @@ iris-kakao-bot — 파티 전용 슬림 버전
 - !파티 는 외부 링크 대신 wikibot(party.db)을 직접 조회해서 응답
 """
 import os
+import json
 import time
 import logging
 
@@ -165,8 +166,15 @@ def webhook():
         chat_id = str(json_info.get('chat_id', room))
         user_id = str(json_info.get('user_id', ''))
 
-        # 시스템 메시지 / 빈 발신자 / 봇 자신 무시
-        if msg_type == '0' or not sender or sender == 'Iris':
+        # 원본 행의 v(JSON 문자열) 파싱 → 봇 자기메시지 판별용 isMine 추출
+        v_raw = json_info.get('v')
+        try:
+            v = json.loads(v_raw) if isinstance(v_raw, str) else (v_raw or {})
+        except (ValueError, TypeError):
+            v = {}
+
+        # 시스템 메시지(type 0) / 빈 발신자 / 봇 자신(isMine) 무시
+        if msg_type == '0' or not sender or v.get('isMine'):
             return jsonify({"status": "ok"})
 
         msg_stripped = msg.strip()
