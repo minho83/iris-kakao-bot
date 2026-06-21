@@ -95,13 +95,16 @@ docker run -d \
     ${ENV_FILE:+--env-file "$ENV_FILE"} \
     "$IMAGE_NAME" >> "$LOG_FILE" 2>&1
 
-# iris-bot 코드 동기화 + pycache 삭제 + 재시작
+# iris-bot 코드 동기화 + 재시작
+# live는 자체 repo(minho83/iris-kakao-bot)를 systemd iris-bot.service로 구동한다.
+# → wikibot 서브모듈 사본(핀 고정·구버전)이 아니라 origin/main을 직접 동기화 후 systemd 재시작.
 IRIS_DIR="$HOME/iris-kakao-bot"
-if [ -d "$IRIS_DIR" ]; then
-    cp "$REPO_DIR/iris-kakao-bot/app.py" "$IRIS_DIR/bot-server/app.py" 2>/dev/null
-    docker exec iris-bot-server rm -rf /app/__pycache__ 2>/dev/null
-    docker restart iris-bot-server >> "$LOG_FILE" 2>&1
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] iris-bot 동기화 완료" >> "$LOG_FILE"
+if [ -d "$IRIS_DIR/.git" ]; then
+    git -C "$IRIS_DIR" fetch origin main >> "$LOG_FILE" 2>&1
+    git -C "$IRIS_DIR" reset --hard origin/main >> "$LOG_FILE" 2>&1
+    find "$IRIS_DIR" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null
+    sudo systemctl restart iris-bot.service >> "$LOG_FILE" 2>&1
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] iris-bot 동기화 완료 (git pull origin/main + systemd restart)" >> "$LOG_FILE"
 fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 배포 완료: $(git rev-parse --short HEAD)" >> "$LOG_FILE"
