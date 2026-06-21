@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 IRIS_URL = os.getenv('IRIS_URL', 'http://localhost:3000')
 # wikibot(Node) 주소 — 파티 API 제공
 WIKIBOT_URL = os.getenv('WIKIBOT_URL', 'http://localhost:8214')
+# wikibot 관리 API(파티방 추가/제거) 인증용 서비스 토큰 = wikibot의 ADMIN_PASSWORD
+WIKIBOT_TOKEN = os.getenv('ADMIN_PASSWORD', '')
+
+
+def _admin_headers():
+    return {"Authorization": f"Bearer {WIKIBOT_TOKEN}"} if WIKIBOT_TOKEN else {}
 
 
 # ── 유틸 ─────────────────────────────────────────────────
@@ -117,7 +123,8 @@ def handle_party_setting(msg, sender_id):
             resp = requests.post(
                 f"{WIKIBOT_URL}/api/party/rooms",
                 json={"admin_id": sender_id, "room_id": target_room,
-                      "room_name": room_name, "collect": is_collect}, timeout=5)
+                      "room_name": room_name, "collect": is_collect},
+                headers=_admin_headers(), timeout=5)
             _party_room_cache.clear()
             return resp.json().get("message", "처리 완료")
         except Exception as e:
@@ -131,7 +138,8 @@ def handle_party_setting(msg, sender_id):
         try:
             resp = requests.delete(
                 f"{WIKIBOT_URL}/api/party/rooms/{parts[2]}",
-                json={"admin_id": sender_id}, timeout=5)
+                json={"admin_id": sender_id},
+                headers=_admin_headers(), timeout=5)
             _party_room_cache.clear()
             return resp.json().get("message", "처리 완료")
         except Exception as e:
