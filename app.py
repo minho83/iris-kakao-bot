@@ -5,6 +5,7 @@ iris-kakao-bot — 파티 전용 슬림 버전
 - !파티 는 외부 링크 대신 wikibot(party.db)을 직접 조회해서 응답
 """
 import os
+import re
 import json
 import time
 import random
@@ -32,10 +33,19 @@ WIKIBOT_TOKEN = os.getenv('ADMIN_PASSWORD', '')
 # milddok.cc 파티 매칭 게시판 봇 API (functions/api/match/bot/parties)
 MATCH_API_URL = os.getenv('MATCH_API_URL', 'https://milddok.cc/api/match/bot')
 MATCH_BOT_KEY = os.getenv('MATCH_BOT_KEY', '')
-MATCH_ROOM_ID = os.getenv('MATCH_ROOM_ID', '18437731460829679')  # !파티결성/!파티확인 허용 방
 MATCH_DEFAULT_ZONE = os.getenv('MATCH_DEFAULT_ZONE', '나겔링')
 MATCH_DEFAULT_SERVER = os.getenv('MATCH_DEFAULT_SERVER', 'seo')
 MATCH_WEB_URL = 'https://milddok.cc/match/'
+
+# 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
+BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
+FEATURES = ('파티봇', '현자', '업데이트', '도움말')
+FEATURES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_features.json')
+TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|도움말)\s*(사용|해제)$')
+
+# wikibot 검색(/ask/*)은 자체 rate limit이 있어 호출 간격을 띄운다
+WIKIBOT_ASK_DELAY = 3.5
+_last_ask_time = 0.0
 
 KST = timezone(timedelta(hours=9))
 MATCH_JOB_LABEL = {'warrior': '전사', 'rogue': '도적', 'mage': '법사', 'cleric': '직자', 'taoist': '도가'}
@@ -55,6 +65,115 @@ def send_reply(chat_id, message):
         logger.info(f"Reply -> {chat_id}: {resp.status_code}")
     except Exception as e:
         logger.error(f"Reply 전송 오류: {e}")
+
+
+# ── 방별 기능 토글 ────────────────────────────────────────
+def _load_features():
+    try:
+        with open(FEATURES_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_features(data):
+    try:
+        with open(FEATURES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logger.error(f"기능 설정 저장 오류: {e}")
+
+
+def feature_enabled(chat_id, feature):
+    return bool(_load_features().get(str(chat_id), {}).get(feature))
+
+
+def handle_feature_toggle(feature, action, chat_id):
+    """'!<기능>사용'/'!<기능>해제' 처리 (호출 전 BOT_OWNER 확인 필수)."""
+    data = _load_features()
+    room = data.setdefault(str(chat_id), {})
+    room[feature] = (action == '사용')
+    _save_features(data)
+    return f"[{feature}] 기능을 {'켰습니다' if room[feature] else '껐습니다'}."
+
+
+def handle_feature_status(chat_id):
+    """'!기능' — 이 방의 토글 상태 (BOT_OWNER 전용)."""
+    room = _load_features().get(str(chat_id), {})
+    status = "\n".join(f"- {f}: {'켜짐' if room.get(f) else '꺼짐'}" for f in FEATURES)
+    return f"[이 방의 기능 설정]\n{status}\n\n켜기: !현자사용 · 끄기: !현자해제"
+
+
+# ── wikibot 검색 (!현자 / !업데이트) ──────────────────────
+def ask_wikibot(endpoint, query='', max_length=500):
+    """wikibot /ask/* 호출 (rate limit 간격 유지)"""
+    global _last_ask_time
+    try:
+        wait = WIKIBOT_ASK_DELAY - (time.time() - _last_ask_time)
+        if wait > 0:
+            time.sleep(wait)
+        _last_ask_time = time.time()
+        resp = requests.post(f"{WIKIBOT_URL}{endpoint}",
+                             json={"query": query, "max_length": max_length}, timeout=30)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        logger.error(f"wikibot 통신 오류: {e}")
+    return None
+
+
+def format_wiki_answer(result, empty_msg="검색 결과가 없습니다."):
+    """wikibot 응답({success, data:{title,date,content,link}} 또는 {answer})을 메시지로"""
+    if result is None:
+        return "서버 연결에 실패했습니다. 잠시 후 다시 시도하세요."
+    if not result.get('success'):
+        return result.get('answer') or result.get('message') or empty_msg
+    d = result.get('data') or {}
+    lines = []
+    if d.get('title'):
+        head = f"[{d['title']}]"
+        if d.get('date'):
+            head += f" ({d['date']})"
+        lines.append(head)
+    content = (d.get('content') or '').strip()
+    if content:
+        if len(content) > 800:
+            content = content[:800] + '…'
+        lines.append(content)
+    if d.get('link'):
+        lines.append(d['link'])
+    if not lines:
+        return result.get('answer') or empty_msg
+    return "\n\n".join(lines)
+
+
+def handle_hyunja(msg):
+    query = msg[len('!현자'):].strip()
+    if not query:
+        return "검색어를 입력해주세요. 예: !현자 발록"
+    return format_wiki_answer(ask_wikibot('/ask/community', query))
+
+
+def handle_update(msg):
+    query = msg[len('!업데이트'):].strip()
+    return format_wiki_answer(ask_wikibot('/ask/update', query), "업데이트 정보가 없습니다.")
+
+
+def handle_help(chat_id):
+    room = _load_features().get(str(chat_id), {})
+    lines = ["[밀떡봇 도움말]"]
+    if room.get('파티봇'):
+        lines.append("!파티결성 [파티명] [인원] — 파티 게시판에 등록")
+        lines.append("!파티확인 — 모집 중인 파티 목록")
+    if room.get('현자'):
+        lines.append("!현자 [검색어] — 현자 게시판 검색")
+    if room.get('업데이트'):
+        lines.append("!업데이트 — 최신 업데이트 확인")
+    if len(lines) == 1:
+        return "이 방에서 사용할 수 있는 기능이 없습니다."
+    lines.append(f"\n파티 게시판: {MATCH_WEB_URL}")
+    return "\n".join(lines)
 
 
 # ── 파티 매칭 게시판(milddok.cc/match) 연동 ───────────────
@@ -323,14 +442,37 @@ def webhook():
             send_reply(chat_id, handle_party_setting(msg_stripped, user_id))
             return jsonify({"status": "ok"})
 
-        # 파티 매칭 게시판 연동 (지정 방 전용)
-        if chat_id == MATCH_ROOM_ID:
-            if msg_stripped.startswith("!파티결성"):
-                send_reply(chat_id, handle_match_create(msg_stripped, sender))
-                return jsonify({"status": "ok"})
-            if msg_stripped == "!파티확인" or msg_stripped.startswith("!파티확인 "):
-                send_reply(chat_id, handle_match_check())
-                return jsonify({"status": "ok"})
+        sender_name = sender.split('/')[0].strip() if '/' in sender else sender.strip()
+
+        # 방별 기능 토글 (BOT_OWNER 전용, 다른 사용자는 무응답)
+        toggle_match = TOGGLE_RE.match(msg_stripped)
+        if toggle_match:
+            if sender_name == BOT_OWNER:
+                send_reply(chat_id, handle_feature_toggle(
+                    toggle_match.group(1), toggle_match.group(2), chat_id))
+            return jsonify({"status": "ok"})
+        if msg_stripped == "!기능":
+            if sender_name == BOT_OWNER:
+                send_reply(chat_id, handle_feature_status(chat_id))
+            return jsonify({"status": "ok"})
+
+        # 기능이 켜진 방에서만 동작하는 명령들
+        if msg_stripped.startswith("!파티결성") and feature_enabled(chat_id, '파티봇'):
+            send_reply(chat_id, handle_match_create(msg_stripped, sender))
+            return jsonify({"status": "ok"})
+        if (msg_stripped == "!파티확인" or msg_stripped.startswith("!파티확인 ")) \
+                and feature_enabled(chat_id, '파티봇'):
+            send_reply(chat_id, handle_match_check())
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!현자") and feature_enabled(chat_id, '현자'):
+            send_reply(chat_id, handle_hyunja(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!업데이트") and feature_enabled(chat_id, '업데이트'):
+            send_reply(chat_id, handle_update(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped == "!도움말" and feature_enabled(chat_id, '도움말'):
+            send_reply(chat_id, handle_help(chat_id))
+            return jsonify({"status": "ok"})
 
         # 파티방 설정 조회 (수집 여부만) + 미등록 방 자동발견용 샘플 전달
         party_room = check_party_room(chat_id, msg, sender)
