@@ -148,11 +148,41 @@ def format_wiki_answer(result, empty_msg="검색 결과가 없습니다."):
     return "\n\n".join(lines)
 
 
+LOD_BASE_URL = 'https://lod.nexon.com'
+
+
 def handle_hyunja(msg):
+    """!현자 [검색어] — 검색 결과를 제목+링크 목록으로 회신 (본문 미출력)"""
     query = msg[len('!현자'):].strip()
     if not query:
         return "검색어를 입력해주세요. 예: !현자 발록"
-    return format_wiki_answer(ask_wikibot('/ask/community', query))
+    result = ask_wikibot('/ask/community', query)
+    if result is None:
+        return "서버 연결에 실패했습니다. 잠시 후 다시 시도하세요."
+    if not result.get('success'):
+        return result.get('answer') or result.get('message') or "검색 결과가 없습니다."
+
+    d = result.get('data') or {}
+    items = []
+    if d.get('title'):
+        items.append({'title': d['title'], 'date': d.get('date'), 'link': d.get('link')})
+    for r in (d.get('otherResults') or []):
+        link = r.get('link') or ''
+        if link.startswith('/'):
+            link = LOD_BASE_URL + link
+        items.append({'title': r.get('title'), 'date': r.get('date'), 'link': link})
+    if not items:
+        return "검색 결과가 없습니다."
+
+    lines = [f"[현자 검색: {query}] {len(items)}건"]
+    for i, it in enumerate(items[:5], 1):
+        head = f"{i}. {it['title']}"
+        if it.get('date'):
+            head += f" ({it['date']})"
+        lines.append(head)
+        if it.get('link'):
+            lines.append(it['link'])
+    return "\n".join(lines)
 
 
 def handle_update(msg):
