@@ -7,7 +7,9 @@ iris-kakao-bot — 파티 전용 슬림 버전
 import os
 import json
 import time
+import random
 import logging
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, request, jsonify
@@ -27,6 +29,18 @@ WIKIBOT_URL = os.getenv('WIKIBOT_URL', 'http://localhost:8214')
 # wikibot 관리 API(파티방 추가/제거) 인증용 서비스 토큰 = wikibot의 ADMIN_PASSWORD
 WIKIBOT_TOKEN = os.getenv('ADMIN_PASSWORD', '')
 
+# milddok.cc 파티 매칭 게시판 봇 API (functions/api/match/bot/parties)
+MATCH_API_URL = os.getenv('MATCH_API_URL', 'https://milddok.cc/api/match/bot')
+MATCH_BOT_KEY = os.getenv('MATCH_BOT_KEY', '')
+MATCH_ROOM_ID = os.getenv('MATCH_ROOM_ID', '18437731460829679')  # !파티결성/!파티확인 허용 방
+MATCH_DEFAULT_ZONE = os.getenv('MATCH_DEFAULT_ZONE', '나겔링')
+MATCH_DEFAULT_SERVER = os.getenv('MATCH_DEFAULT_SERVER', 'seo')
+MATCH_WEB_URL = 'https://milddok.cc/match/'
+
+KST = timezone(timedelta(hours=9))
+MATCH_JOB_LABEL = {'warrior': '전사', 'rogue': '도적', 'mage': '법사', 'cleric': '직자', 'taoist': '도가'}
+MATCH_SERVER_LABEL = {'seo': '세오', 'shus': '셔스'}
+
 
 def _admin_headers():
     return {"Authorization": f"Bearer {WIKIBOT_TOKEN}"} if WIKIBOT_TOKEN else {}
@@ -41,6 +55,126 @@ def send_reply(chat_id, message):
         logger.info(f"Reply -> {chat_id}: {resp.status_code}")
     except Exception as e:
         logger.error(f"Reply 전송 오류: {e}")
+
+
+# ── 파티 매칭 게시판(milddok.cc/match) 연동 ───────────────
+def _match_headers():
+    return {"X-Bot-Key": MATCH_BOT_KEY}
+
+
+def _fmt_party_time(ms):
+    """epoch ms → '오늘 21:00' / '내일 09:00' / '8/3 21:00' (KST)"""
+    dt = datetime.fromtimestamp(ms / 1000, KST)
+    today = datetime.now(KST).date()
+    if dt.date() == today:
+        day = "오늘"
+    elif dt.date() == today + timedelta(days=1):
+        day = "내일"
+    else:
+        day = f"{dt.month}/{dt.day}"
+    return f"{day} {dt:%H:%M}"
+
+
+def _fmt_duration(minutes):
+    return f"{minutes // 60}시간" if minutes % 60 == 0 else f"{minutes}분"
+
+
+def handle_match_create(msg, sender):
+    """!파티결성 [파티명] [인원] → 게시판에 파티 등록.
+
+    구역/서버/시작시간은 기본값을 쓴다:
+    구역 MATCH_DEFAULT_ZONE · 서버 MATCH_DEFAULT_SERVER · 시작 다음 정각(최소 1시간 뒤) · 1시간 사냥.
+    직업별 인원은 파티장(전사) 1 + 나머지를 도적→법사→직자→도가→전사 순환 배분.
+    """
+    usage = ("사용법: !파티결성 [파티명] [인원]\n"
+             "예) !파티결성 발록가실분 4\n"
+             f"기본값: {MATCH_DEFAULT_ZONE} · {MATCH_SERVER_LABEL.get(MATCH_DEFAULT_SERVER)} · 다음 정각 시작 · 1시간")
+    parts = msg.split()[1:]
+    if not parts or not parts[-1].isdigit():
+        return usage
+    total = int(parts[-1])
+    if not 2 <= total <= 12:
+        return "인원은 2~12명 사이로 입력하세요."
+    title = " ".join(parts[:-1])[:40]
+
+    nick = (sender.split('/')[0].strip() if '/' in sender else sender).strip()[:16] or "익명"
+
+    # 시작시간: 지금+1시간을 다음 정각으로 올림 (예: 12:10 → 14:00, 12:00 → 13:00)
+    now = datetime.now(KST)
+    base = now.replace(minute=0, second=0, microsecond=0)
+    start = base + timedelta(hours=1 if now == base else 2)
+    party_at = int(start.timestamp() * 1000)
+
+    # 직업 배분: 파티장(전사) 1자리 + 나머지 순환
+    caps = {"warrior": 1}
+    for i, _ in enumerate(range(total - 1)):
+        job = ["rogue", "mage", "cleric", "taoist", "warrior"][i % 5]
+        caps[job] = caps.get(job, 0) + 1
+
+    password = f"{random.randint(0, 9999):04d}"
+    payload = {
+        "zone_name": MATCH_DEFAULT_ZONE,
+        "server": MATCH_DEFAULT_SERVER,
+        "creator_nick": nick,
+        "creator_job": "warrior",
+        "title": title or None,
+        "party_at": party_at,
+        "duration_min": 60,
+        "password": password,
+        "caps": caps,
+    }
+    try:
+        resp = requests.post(f"{MATCH_API_URL}/parties", json=payload,
+                             headers=_match_headers(), timeout=10)
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"파티 등록 API 오류: {e}")
+        return "파티 등록 중 오류가 발생했습니다. 잠시 후 다시 시도하세요."
+    if not data.get("ok"):
+        return f"파티 등록 실패: {data.get('error', '알 수 없는 오류')}"
+
+    jobs_txt = " ".join(f"{MATCH_JOB_LABEL[j]}{c}" for j, c in caps.items())
+    return ("[파티 등록 완료]\n"
+            f"구역: {data.get('zone', MATCH_DEFAULT_ZONE)} ({MATCH_SERVER_LABEL.get(MATCH_DEFAULT_SERVER)})\n"
+            + (f"파티명: {title}\n" if title else "")
+            + f"파티장: {nick}(전사)\n"
+            f"시작: {_fmt_party_time(party_at)} · 1시간\n"
+            f"모집: {jobs_txt} (총 {total}명)\n"
+            f"수정/삭제 암호: {password}\n"
+            f"{MATCH_WEB_URL}")
+
+
+def handle_match_check():
+    """!파티확인 → 게시판의 현재 파티 목록 요약."""
+    try:
+        resp = requests.get(f"{MATCH_API_URL}/parties",
+                            params={"server": MATCH_DEFAULT_SERVER},
+                            headers=_match_headers(), timeout=10)
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"파티 목록 API 오류: {e}")
+        return "파티 목록 조회 중 오류가 발생했습니다. 잠시 후 다시 시도하세요."
+    if not data.get("ok"):
+        return f"파티 목록 조회 실패: {data.get('error', '알 수 없는 오류')}"
+
+    parties = data.get("parties", [])
+    if not parties:
+        return f"현재 모집 중인 파티가 없습니다.\n{MATCH_WEB_URL}"
+
+    lines = [f"[파티 목록 - {MATCH_SERVER_LABEL.get(MATCH_DEFAULT_SERVER)}] {len(parties)}건"]
+    for i, p in enumerate(parties, 1):
+        title = p.get("title") or "(파티명 없음)"
+        lines.append(f"\n{i}. {p['zone']} | {title}")
+        lines.append(f"   {_fmt_party_time(p['party_at'])} · {_fmt_duration(p['duration_min'])}"
+                     f" · 파티장 {p['creator_nick']}({MATCH_JOB_LABEL.get(p['creator_job'], '?')})")
+        open_seats = []
+        for jb in p.get("jobs", []):
+            remain = jb["capacity"] - len(jb.get("applicants", []))
+            if remain > 0:
+                open_seats.append(f"{MATCH_JOB_LABEL.get(jb['job'], '?')}{remain}")
+        lines.append(f"   빈자리: {' '.join(open_seats) if open_seats else '없음 (마감)'}")
+    lines.append(f"\n{MATCH_WEB_URL}")
+    return "\n".join(lines)
 
 
 # ── 파티방 설정 캐시 ──────────────────────────────────────
@@ -188,6 +322,15 @@ def webhook():
         if msg_stripped.startswith("!파티설정"):
             send_reply(chat_id, handle_party_setting(msg_stripped, user_id))
             return jsonify({"status": "ok"})
+
+        # 파티 매칭 게시판 연동 (지정 방 전용)
+        if chat_id == MATCH_ROOM_ID:
+            if msg_stripped.startswith("!파티결성"):
+                send_reply(chat_id, handle_match_create(msg_stripped, sender))
+                return jsonify({"status": "ok"})
+            if msg_stripped == "!파티확인" or msg_stripped.startswith("!파티확인 "):
+                send_reply(chat_id, handle_match_check())
+                return jsonify({"status": "ok"})
 
         # 파티방 설정 조회 (수집 여부만) + 미등록 방 자동발견용 샘플 전달
         party_room = check_party_room(chat_id, msg, sender)
