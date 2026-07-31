@@ -149,6 +149,15 @@ def format_wiki_answer(result, empty_msg="검색 결과가 없습니다."):
 
 
 LOD_BASE_URL = 'https://lod.nexon.com'
+# 넥슨 게시판 글 링크를 짧게 — milddok.cc/g/<글번호> 가 넥슨으로 리다이렉트한다
+SHORT_LINK_BASE = 'https://milddok.cc/g/'
+_POST_ID_RE = re.compile(r'/game/(\d+)')
+
+
+def _short_link(link):
+    """넥슨 게시판 URL → milddok.cc/g/<id> 단축 링크 (실패 시 원본 유지)"""
+    m = _POST_ID_RE.search(link or '')
+    return f"{SHORT_LINK_BASE}{m.group(1)}" if m else link
 
 
 def handle_hyunja(msg):
@@ -180,7 +189,7 @@ def handle_hyunja(msg):
         head = f"{i}. {it['title']}"
         if it.get('date'):
             head += f" ({it['date']})"
-        block = head + (f"\n{it['link']}" if it.get('link') else "")
+        block = head + (f"\n{_short_link(it['link'])}" if it.get('link') else "")
         blocks.append(block)
     return "\n\n".join(blocks)
 
