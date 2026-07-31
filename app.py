@@ -174,15 +174,15 @@ def handle_hyunja(msg):
     if not items:
         return "검색 결과가 없습니다."
 
-    lines = [f"[현자 검색: {query}] {len(items)}건"]
+    # 카톡 가독성: 항목 사이 빈 줄
+    blocks = [f"[현자 검색: {query}] {len(items)}건"]
     for i, it in enumerate(items[:5], 1):
         head = f"{i}. {it['title']}"
         if it.get('date'):
             head += f" ({it['date']})"
-        lines.append(head)
-        if it.get('link'):
-            lines.append(it['link'])
-    return "\n".join(lines)
+        block = head + (f"\n{it['link']}" if it.get('link') else "")
+        blocks.append(block)
+    return "\n\n".join(blocks)
 
 
 def handle_update(msg):
