@@ -36,12 +36,15 @@ MATCH_BOT_KEY = os.getenv('MATCH_BOT_KEY', '')
 MATCH_DEFAULT_ZONE = os.getenv('MATCH_DEFAULT_ZONE', '나겔링')
 MATCH_DEFAULT_SERVER = os.getenv('MATCH_DEFAULT_SERVER', 'seo')
 MATCH_WEB_URL = 'https://milddok.cc/match/'
+# milddok.cc 사이트 봇 API (functions/api/bot/*) — 퀘스트 동선·길찾기
+# 응답의 text를 그대로 카톡에 뿌린다. 인증은 파티 API와 같은 MATCH_BOT_KEY.
+SITE_API_URL = os.getenv('SITE_API_URL', 'https://milddok.cc/api/bot')
 
 # 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
 BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
-FEATURES = ('파티봇', '현자', '업데이트', '도움말')
+FEATURES = ('파티봇', '현자', '업데이트', '퀘스트', '도움말')
 FEATURES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_features.json')
-TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|도움말)\s*(사용|해제)$')
+TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|퀘스트|도움말)\s*(사용|해제)$')
 
 # wikibot 검색(/ask/*)은 자체 rate limit이 있어 호출 간격을 띄운다
 WIKIBOT_ASK_DELAY = 3.5
@@ -262,11 +265,60 @@ def handle_help(chat_id):
         lines.append("!현자 [검색어] — 현자 게시판 검색")
     if room.get('업데이트'):
         lines.append("!업데이트 — 최신 업데이트 확인")
+    if room.get('퀘스트'):
+        lines.append("!퀘스트 [이름] — 퀘스트 동선·필요한 것·보상")
+        lines.append("!길찾기 [출발] [도착] — 맵에서 맵으로 가는 길")
     if len(lines) == 1:
         return "이 방에서 사용할 수 있는 기능이 없습니다."
     lines.append(f"\n파티 게시판: {MATCH_WEB_URL}")
     return "\n".join(lines)
 
+
+# ── 퀘스트·길찾기 (milddok.cc/api/bot) ────────────────────
+def _site_get(path, params):
+    """사이트 봇 API 호출.
+
+    응답의 `text`는 카톡에 **그대로 뿌리도록** 서버가 만들어 준 글이다.
+    여기서 다시 조립하지 않는다 — 그러면 사이트와 봇의 답이 어긋나기 시작한다.
+    """
+    try:
+        res = requests.get(f"{SITE_API_URL}{path}", params=params,
+                           headers=_match_headers(), timeout=8)
+        data = res.json()
+    except Exception as e:
+        logger.error(f"site api {path} 실패: {e}")
+        return "사이트를 불러오지 못했습니다. 잠시 뒤 다시 시도해주세요."
+    if not data.get('ok'):
+        return data.get('error') or "요청을 처리하지 못했습니다."
+    return data.get('text') or "결과가 없습니다."
+
+
+def handle_quest(msg):
+    """!퀘스트 [이름] — 동선·필요한 것·보상"""
+    query = msg[len('!퀘스트'):].strip()
+    if not query:
+        return "퀘스트 이름을 입력해주세요. 예: !퀘스트 구피의부탁1"
+    return _site_get('/quest', {'q': query})
+
+
+def handle_route(msg):
+    """!길찾기 [출발] [도착] — 포탈·대륙지도를 아우른 최단 경로
+
+    맵 이름에 띄어쓰기가 든 경우가 있어 '>'나 쉼표로도 나눌 수 있게 둔다.
+    """
+    body = msg[len('!길찾기'):].strip()
+    for sep in ('>', ','):
+        if sep in body:
+            a, _, b = body.partition(sep)
+            a, b = a.strip(), b.strip()
+            break
+    else:
+        parts = body.split(None, 1)
+        a, b = (parts + ['', ''])[:2]
+        a, b = a.strip(), b.strip()
+    if not a or not b:
+        return "출발 맵과 도착 맵을 입력해주세요. 예: !길찾기 밀레스마을 노비스마을"
+    return _site_get('/route', {'from': a, 'to': b})
 
 # ── 파티 매칭 게시판(milddok.cc/match) 연동 ───────────────
 def _match_headers():
@@ -561,6 +613,12 @@ def webhook():
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!업데이트") and feature_enabled(chat_id, '업데이트'):
             send_reply(chat_id, handle_update(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!퀘스트") and feature_enabled(chat_id, '퀘스트'):
+            send_reply(chat_id, handle_quest(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!길찾기") and feature_enabled(chat_id, '퀘스트'):
+            send_reply(chat_id, handle_route(msg_stripped))
             return jsonify({"status": "ok"})
         if msg_stripped == "!도움말" and feature_enabled(chat_id, '도움말'):
             send_reply(chat_id, handle_help(chat_id))
