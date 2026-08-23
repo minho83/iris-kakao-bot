@@ -259,15 +259,19 @@ def handle_help(chat_id):
     room = _load_features().get(str(chat_id), {})
     lines = ["[밀떡봇 도움말]"]
     if room.get('파티봇'):
-        lines.append("!파티결성 [파티명] [인원] — 파티 게시판에 등록")
+        lines.append("!파티결성 파티명 인원 — 파티 게시판에 등록")
+        lines.append("  예) !파티결성 발록 5")
         lines.append("!파티확인 — 모집 중인 파티 목록")
     if room.get('현자'):
-        lines.append("!현자 [검색어] — 현자 게시판 검색")
+        lines.append("!현자 검색어 — 위키·게시판 검색")
+        lines.append("  예) !현자 발록")
     if room.get('업데이트'):
         lines.append("!업데이트 — 최신 업데이트 확인")
     if room.get('퀘스트'):
-        lines.append("!퀘스트 [이름] — 퀘스트 동선·필요한 것·보상")
-        lines.append("!길찾기 [출발] [도착] — 맵에서 맵으로 가는 길")
+        lines.append("!퀘스트 이름 — 동선·필요한 것·보상")
+        lines.append("  예) !퀘스트 구피의부탁1")
+        lines.append("!길찾기 출발맵 도착맵 — 가는 길")
+        lines.append("  예) !길찾기 밀레스마을 나겔링마을")
     if len(lines) == 1:
         return "이 방에서 사용할 수 있는 기능이 없습니다."
     lines.append(f"\n파티 게시판: {MATCH_WEB_URL}")
@@ -297,7 +301,7 @@ def handle_quest(msg):
     """!퀘스트 [이름] — 동선·필요한 것·보상"""
     query = msg[len('!퀘스트'):].strip()
     if not query:
-        return "퀘스트 이름을 입력해주세요. 예: !퀘스트 구피의부탁1"
+        return "퀘스트 이름을 입력해주세요.\n예) !퀘스트 구피의부탁1"
     return _site_get('/quest', {'q': query})
 
 
@@ -317,7 +321,7 @@ def handle_route(msg):
         a, b = (parts + ['', ''])[:2]
         a, b = a.strip(), b.strip()
     if not a or not b:
-        return "출발 맵과 도착 맵을 입력해주세요. 예: !길찾기 밀레스마을 노비스마을"
+        return "출발 맵과 도착 맵을 입력해주세요.\n예) !길찾기 밀레스마을 나겔링마을"
     return _site_get('/route', {'from': a, 'to': b})
 
 # ── 파티 매칭 게시판(milddok.cc/match) 연동 ───────────────
