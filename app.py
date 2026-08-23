@@ -160,8 +160,26 @@ def _short_link(link):
     return f"{SHORT_LINK_BASE}{m.group(1)}" if m else link
 
 
+def _excerpt(text, limit=200):
+    """본문 발췌 — 빈 줄 정리 후 줄 단위로 limit자까지"""
+    if not text:
+        return ''
+    lines = [l.strip() for l in str(text).strip().split('\n') if l.strip()]
+    out, total = [], 0
+    for line in lines:
+        if total + len(line) > limit:
+            remain = limit - total
+            if remain > 15:
+                out.append(line[:remain].rstrip() + '…')
+            break
+        out.append(line)
+        total += len(line)
+    return '\n'.join(out)
+
+
 def handle_hyunja(msg):
-    """!현자 [검색어] — 검색 결과를 제목+링크 목록으로 회신 (본문 미출력)"""
+    """!현자 [검색어] — 위키(노션) + 넥슨 게시판 통합 검색
+    1번 결과에는 본문 발췌를 붙이고 나머지는 제목+링크만 회신한다."""
     query = msg[len('!현자'):].strip()
     if not query:
         return "검색어를 입력해주세요. 예: !현자 발록"
@@ -172,6 +190,9 @@ def handle_hyunja(msg):
         return result.get('answer') or result.get('message') or "검색 결과가 없습니다."
 
     d = result.get('data') or {}
+    wiki = result.get('wiki') or []
+
+    # 게시판 결과
     items = []
     if d.get('title'):
         items.append({'title': d['title'], 'date': d.get('date'), 'link': d.get('link')})
@@ -180,17 +201,49 @@ def handle_hyunja(msg):
         if link.startswith('/'):
             link = LOD_BASE_URL + link
         items.append({'title': r.get('title'), 'date': r.get('date'), 'link': link})
-    if not items:
+
+    if not wiki and not items:
         return "검색 결과가 없습니다."
 
-    # 카톡 가독성: 항목 사이 빈 줄
-    blocks = [f"[현자 검색: {query}] {len(items)}건"]
-    for i, it in enumerate(items[:5], 1):
-        head = f"{i}. {it['title']}"
-        if it.get('date'):
-            head += f" ({it['date']})"
-        block = head + (f"\n{_short_link(it['link'])}" if it.get('link') else "")
-        blocks.append(block)
+    blocks = [f"[현자 검색: {query}]"]
+
+    # 위키 우선 노출
+    if wiki:
+        blocks.append(f"📖 위키 {len(wiki)}건")
+        for i, w in enumerate(wiki[:3], 1):
+            head = f"{i}. {w.get('title') or '(제목 없음)'}"
+            page = w.get('page')
+            if page and page != w.get('title'):
+                head += f" — {page}"
+            block = head
+            # 1번 결과만 본문 발췌. 외부 링크 항목은 링크가 곧 답이라 발췌를 붙이지 않는다.
+            if i == 1 and not w.get('isLink'):
+                excerpt = _excerpt(w.get('snippet'), 180)
+                if excerpt:
+                    block += f"\n{excerpt}"
+            if w.get('url'):
+                block += f"\n{w['url']}"
+            blocks.append(block)
+
+    if items:
+        blocks.append(f"📋 게시판 {len(items)}건")
+        for i, it in enumerate(items[:5], 1):
+            head = f"{i}. {it['title']}"
+            if it.get('date'):
+                head += f" ({it['date']})"
+            block = head
+            # 1번 결과만 본문 발췌 (wikibot이 첫 글 본문을 이미 긁어온다)
+            if i == 1:
+                excerpt = _excerpt(d.get('content'), 200)
+                if excerpt:
+                    block += f"\n{excerpt}"
+            if it.get('link'):
+                block += f"\n{_short_link(it['link'])}"
+            blocks.append(block)
+    elif result.get('message'):
+        # 게시판만 실패(레이트리밋 등) — 위키 결과는 이미 위에 붙었다
+        blocks.append(result['message'])
+
     return "\n\n".join(blocks)
 
 
