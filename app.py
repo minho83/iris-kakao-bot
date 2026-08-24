@@ -42,9 +42,9 @@ SITE_API_URL = os.getenv('SITE_API_URL', 'https://milddok.cc/api/bot')
 
 # 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
 BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
-FEATURES = ('파티봇', '현자', '업데이트', '퀘스트', '도움말')
+FEATURES = ('파티봇', '현자', '업데이트', '퀘스트', '매크로', '도움말')
 FEATURES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_features.json')
-TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|퀘스트|도움말)\s*(사용|해제)$')
+TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|퀘스트|매크로|도움말)\s*(사용|해제)$')
 
 # wikibot 검색(/ask/*)은 자체 rate limit이 있어 호출 간격을 띄운다
 WIKIBOT_ASK_DELAY = 3.5
@@ -272,6 +272,9 @@ def handle_help(chat_id):
         lines.append("  예) !퀘스트 구피의부탁1")
         lines.append("!길찾기 출발맵 도착맵 — 가는 길")
         lines.append("  예) !길찾기 밀레스마을 나겔링마을")
+    if room.get('매크로'):
+        lines.append("!매크로 — 키셋팅 안내 (목록 보기)")
+        lines.append("  예) !매크로 사냥")
     if len(lines) == 1:
         return "이 방에서 사용할 수 있는 기능이 없습니다."
     lines.append(f"\n파티 게시판: {MATCH_WEB_URL}")
@@ -296,6 +299,16 @@ def _site_get(path, params):
         return data.get('error') or "요청을 처리하지 못했습니다."
     return data.get('text') or "결과가 없습니다."
 
+
+def handle_macro(msg):
+    """!매크로 [사냥/이동/…] — 키셋팅을 글로 안내
+
+    **파일이나 붙여넣기용 데이터는 주지 않는다.** 넥슨 고객센터가 키셋팅
+    파일 공유형 서비스는 지양하고 텍스트 템플릿을 검토하라고 했다(2026-08-08).
+    어느 키에 무슨 동작을 걸면 되는지 읽을 글만 전달한다.
+    """
+    query = msg[len('!매크로'):].strip()
+    return _site_get('/macro', {'q': query})
 
 def handle_quest(msg):
     """!퀘스트 [이름] — 동선·필요한 것·보상"""
@@ -623,6 +636,9 @@ def webhook():
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!길찾기") and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_route(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!매크로") and feature_enabled(chat_id, '매크로'):
+            send_reply(chat_id, handle_macro(msg_stripped))
             return jsonify({"status": "ok"})
         if msg_stripped == "!도움말" and feature_enabled(chat_id, '도움말'):
             send_reply(chat_id, handle_help(chat_id))
