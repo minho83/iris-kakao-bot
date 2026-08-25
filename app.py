@@ -5,15 +5,24 @@ iris-kakao-bot — 파티 전용 슬림 버전
 - !파티 는 외부 링크 대신 wikibot(party.db)을 직접 조회해서 응답
 """
 import os
+import sys
 import re
 import json
 import time
 import random
 import logging
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, request, jsonify
+
+# 대화 저장고(~/chat-archive). 없으면 조용히 끈다 — 저장이 안 된다고 봇이 죽으면 안 된다.
+sys.path.insert(0, str(Path.home() / "chat-archive"))
+try:
+    import archive as chat_archive
+except Exception:  # noqa: BLE001
+    chat_archive = None
 
 app = Flask(__name__)
 
@@ -40,11 +49,15 @@ MATCH_WEB_URL = 'https://milddok.cc/match/'
 # 응답의 text를 그대로 카톡에 뿌린다. 인증은 파티 API와 같은 MATCH_BOT_KEY.
 SITE_API_URL = os.getenv('SITE_API_URL', 'https://milddok.cc/api/bot')
 
+# 방 대화 질문응답(RAG). GB10에 GPU가 있어 거기서 돈다 — 테일스케일로 붙는다.
+ASK_URL = os.getenv('ASK_URL', 'http://100.92.82.79:8899/ask')
+ASK_KEY = os.getenv('ASK_KEY', '')
+
 # 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
 BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
-FEATURES = ('파티봇', '현자', '업데이트', '퀘스트', '매크로', '도움말')
+FEATURES = ('파티봇', '현자', '업데이트', '퀘스트', '매크로', '질문', '도움말')
 FEATURES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_features.json')
-TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|퀘스트|매크로|도움말)\s*(사용|해제)$')
+TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|퀘스트|매크로|질문|도움말)\s*(사용|해제)$')
 
 # wikibot 검색(/ask/*)은 자체 rate limit이 있어 호출 간격을 띄운다
 WIKIBOT_ASK_DELAY = 3.5
@@ -272,6 +285,9 @@ def handle_help(chat_id):
         lines.append("  예) !퀘스트 구피의부탁1")
         lines.append("!길찾기 출발맵 도착맵 — 가는 길")
         lines.append("  예) !길찾기 밀레스마을 나겔링마을")
+    if room.get('질문'):
+        lines.append("!질문 궁금한 것 — 방에 쌓인 대화에서 찾아 답합니다")
+        lines.append("  예) !질문 초보자 뭐부터 해야해요")
     if room.get('매크로'):
         lines.append("!매크로 — 키셋팅 안내 (목록 보기)")
         lines.append("  예) !매크로 사냥")
@@ -299,6 +315,26 @@ def _site_get(path, params):
         return data.get('error') or "요청을 처리하지 못했습니다."
     return data.get('text') or "결과가 없습니다."
 
+
+def handle_ask(msg, chat_id):
+    """!질문 [궁금한 것] — 방에 쌓인 대화에서 찾아 답한다.
+
+    **지어내지 않는다.** 비슷한 대화가 없으면 없다고 답한다 — 게임 정보는
+    틀리면 사람이 헤매니 그럴듯한 답이 가장 나쁘다.
+    """
+    query = msg[len('!질문'):].strip()
+    if not query:
+        return "무엇이 궁금한지 같이 적어주세요.\n예) !질문 초보자 뭐부터 해야해요"
+
+    # 30B 모델이라 10초를 넘기기도 한다. 그동안 아무 말이 없으면 죽은 줄 안다.
+    send_reply(chat_id, "찾아보는 중입니다…")
+    try:
+        res = requests.get(ASK_URL, params={'q': query},
+                           headers={'X-Ask-Key': ASK_KEY}, timeout=90)
+        return res.json().get('text') or "답을 만들지 못했습니다."
+    except Exception as e:
+        logger.error(f"질문 실패: {e}")
+        return "지금은 답할 수 없습니다. 잠시 뒤 다시 시도해주세요."
 
 def handle_macro(msg):
     """!매크로 [사냥/이동/…] — 키셋팅을 글로 안내
@@ -617,6 +653,15 @@ def webhook():
                 send_reply(chat_id, handle_feature_status(chat_id))
             return jsonify({"status": "ok"})
 
+        # 대화 저장 — '질문'을 켠 방만. 명령어와 봇 자기 말은 넣지 않는다.
+        # 무엇을 더 버릴지는 색인을 만들 때 정한다(원본은 그대로 쌓는다).
+        if chat_archive and feature_enabled(chat_id, '질문') \
+                and not msg_stripped.startswith('!'):
+            chat_archive.save(
+                msg_id=str(json_info.get('id') or ''),
+                chat_id=chat_id, room=room,
+                sender=sender_name, text=msg)
+
         # 기능이 켜진 방에서만 동작하는 명령들
         if msg_stripped.startswith("!파티결성") and feature_enabled(chat_id, '파티봇'):
             send_reply(chat_id, handle_match_create(msg_stripped, sender))
@@ -636,6 +681,9 @@ def webhook():
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!길찾기") and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_route(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!질문") and feature_enabled(chat_id, '질문'):
+            send_reply(chat_id, handle_ask(msg_stripped, chat_id))
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!매크로") and feature_enabled(chat_id, '매크로'):
             send_reply(chat_id, handle_macro(msg_stripped))
