@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 import requests
 from flask import Flask, request, jsonify
 
+import notices
+
 # 대화 저장고(~/chat-archive). 없으면 조용히 끈다 — 저장이 안 된다고 봇이 죽으면 안 된다.
 sys.path.insert(0, str(Path.home() / "chat-archive"))
 try:
@@ -81,6 +83,23 @@ def send_reply(chat_id, message):
         logger.info(f"Reply -> {chat_id}: {resp.status_code}")
     except Exception as e:
         logger.error(f"Reply 전송 오류: {e}")
+
+
+# ── 방 공지 (milddok.cc /notice-admin/) ─────────────────────
+# 누가 들어올 때 / 정한 시각에 뿌리는 글. 목록은 사이트에서 1분마다 받아 온다 —
+# 문구를 고치려고 여기 들어와 재시작하지 않는다. 인증은 파티 API와 같은 MATCH_BOT_KEY.
+NOTICE_API_URL = os.getenv('NOTICE_API_URL', 'https://milddok.cc/api/notices')
+NOTICE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'notice_state.json')
+room_notices = notices.Notices(NOTICE_API_URL, MATCH_BOT_KEY, send_reply, NOTICE_STATE_FILE)
+
+
+def _parse_feed(msg):
+    """type 0(피드) 메시지의 본문은 JSON이다: {"feedType":4,"members":[...]} 등"""
+    try:
+        data = json.loads(msg) if isinstance(msg, str) else {}
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 # ── 방별 기능 토글 ────────────────────────────────────────
@@ -623,6 +642,14 @@ def webhook():
         except (ValueError, TypeError):
             v = {}
 
+        # 방에 누가 들어옴(피드 feedType 4) → 입장 공지. 초대한 사람이 없으면(링크 입장) sender가 비므로
+        # 아래 "빈 발신자 무시"보다 먼저 본다. 4=들어옴, 2=나감.
+        if msg_type == '0':
+            feed = _parse_feed(msg)
+            if feed.get('feedType') == 4:
+                room_notices.on_join(chat_id, room, feed.get('members') or [])
+            return jsonify({"status": "ok"})
+
         # 시스템 메시지(type 0) / 빈 발신자 / 봇 자신(isMine) 무시
         if msg_type == '0' or not sender or v.get('isMine'):
             return jsonify({"status": "ok"})
@@ -710,4 +737,5 @@ def webhook():
 
 
 if __name__ == '__main__':
+    room_notices.start()
     app.run(host='0.0.0.0', port=5000)
