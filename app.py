@@ -642,6 +642,9 @@ def webhook():
         except (ValueError, TypeError):
             v = {}
 
+        # 봇이 본 방 목록 — 관리 화면(/notice-admin/)에서 방을 고르게 하려고 사이트에 올린다.
+        room_notices.note_room(chat_id, room)
+
         # 방에 누가 들어옴(피드 feedType 4) → 입장 공지. 초대한 사람이 없으면(링크 입장) sender가 비므로
         # 아래 "빈 발신자 무시"보다 먼저 본다. 4=들어옴, 2=나감.
         if msg_type == '0':

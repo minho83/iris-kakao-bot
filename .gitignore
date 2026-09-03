@@ -2,3 +2,4 @@ bot.log
 room_features.json
 test_match_local.py
 notice_state.json
+rooms.json

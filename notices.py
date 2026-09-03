@@ -30,6 +30,7 @@ KST = timezone(timedelta(hours=9))
 POLL_SEC = 60          # 목록을 다시 받는 간격
 TICK_SEC = 15          # 시각을 확인하는 간격 (1분 안에 반드시 한 번은 본다)
 JOIN_COOLDOWN_SEC = 30 * 60
+ROOMS_PUSH_SEC = 5 * 60  # 방 목록을 사이트에 올리는 간격 (새 방은 바로)
 STATE_KEEP_DAYS = 2
 
 
@@ -49,6 +50,56 @@ class Notices:
         self.sent = self._load_state()      # {"YYYY-MM-DD|id|HH:MM": epoch}
         self.join_seen = {}                 # (chat_id, user_id) -> epoch
         self.now_done = set()               # 이 프로세스가 이미 보낸 send_now id
+        # 봇이 본 방 — 관리 화면에서 고르게 하려고 사이트에 올린다. 17자리 ID를 외울 사람은 없다.
+        self.rooms_file = os.path.join(os.path.dirname(state_file), 'rooms.json')
+        self.rooms = self._load_rooms()     # {chat_id: {name, last_seen(ms), count}}
+        self.rooms_dirty = True             # 시작하면 한 번은 올린다
+        self.rooms_pushed_at = 0.0
+
+    # ── 방 목록 ──────────────────────────────────────────
+    def _load_rooms(self):
+        try:
+            with open(self.rooms_file, encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def note_room(self, chat_id, name):
+        """웹훅마다 부른다. 새 방이면 다음 회차에 바로 올린다."""
+        cid = str(chat_id or '')
+        if not cid.isdigit():
+            return
+        with self.lock:
+            r = self.rooms.get(cid)
+            fresh = r is None
+            if fresh:
+                r = self.rooms[cid] = {'name': '', 'last_seen': 0, 'count': 0}
+            if name:
+                r['name'] = str(name)
+            r['last_seen'] = int(time.time() * 1000)
+            r['count'] = int(r.get('count') or 0) + 1
+            if fresh:
+                self.rooms_dirty = True
+
+    def push_rooms(self):
+        with self.lock:
+            payload = [{'chat_id': cid, **r} for cid, r in self.rooms.items()]
+        try:
+            with open(self.rooms_file, 'w', encoding='utf-8') as f:
+                json.dump(self.rooms, f, ensure_ascii=False, indent=1)
+        except OSError as e:
+            logger.error(f"방 목록 저장 오류: {e}")
+        try:
+            res = requests.post(f"{self.api_url}/rooms", json={'rooms': payload},
+                                headers=self.headers, timeout=8)
+            if not res.json().get('ok'):
+                logger.error(f"방 목록 올리기 오류: {res.text[:200]}")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"방 목록 올리기 실패: {e}")
+            return
+        self.rooms_dirty = False
+        self.rooms_pushed_at = time.time()
 
     # ── 상태 파일 ────────────────────────────────────────
     def _load_state(self):
@@ -167,6 +218,8 @@ class Notices:
             try:
                 if time.time() - self.fetched_at >= POLL_SEC:
                     self.refresh()
+                if self.rooms_dirty or time.time() - self.rooms_pushed_at >= ROOMS_PUSH_SEC:
+                    self.push_rooms()
                 self.tick()
             except Exception as e:  # noqa: BLE001
                 logger.error(f"공지 루프 오류: {e}")
