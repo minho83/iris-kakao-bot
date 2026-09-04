@@ -54,6 +54,10 @@ SITE_API_URL = os.getenv('SITE_API_URL', 'https://milddok.cc/api/bot')
 # 방 대화 질문응답(RAG). GB10에 GPU가 있어 거기서 돈다 — 테일스케일로 붙는다.
 ASK_URL = os.getenv('ASK_URL', 'http://100.92.82.79:8899/ask')
 ASK_KEY = os.getenv('ASK_KEY', '')
+# 틀린 답 신고 — `!틀림`을 치면 그 방의 직전 !질문 질문·답을 사이트에 올린다 (X-Bot-Key).
+ASK_REVIEW_URL = os.getenv('ASK_REVIEW_URL', 'https://milddok.cc/api/ask/review')
+# 방마다 마지막 !질문 — {chat_id: {q, a, who, ts}}. 재시작하면 비지만 신고는 대개 몇 분 안에 온다.
+LAST_ASK = {}
 
 # 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
 BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
@@ -307,6 +311,8 @@ def handle_help(chat_id):
     if room.get('질문'):
         lines.append("!질문 궁금한 것 — 방에 쌓인 대화에서 찾아 답합니다")
         lines.append("  예) !질문 초보자 뭐부터 해야해요")
+        lines.append("!틀림 — 방금 !질문 답이 틀렸으면 이렇게 알려주세요 (운영자가 확인)")
+        lines.append("  예) !틀림 이벤트 얘긴데 낚시가 나옴")
     if room.get('매크로'):
         lines.append("!매크로 — 키셋팅 안내 (목록 보기)")
         lines.append("  예) !매크로 사냥")
@@ -339,7 +345,7 @@ def _site_get(path, params):
     return data.get('text') or "결과가 없습니다."
 
 
-def handle_ask(msg, chat_id):
+def handle_ask(msg, chat_id, who='', room=''):
     """!질문 [궁금한 것] — 방에 쌓인 대화에서 찾아 답한다.
 
     **지어내지 않는다.** 비슷한 대화가 없으면 없다고 답한다 — 게임 정보는
@@ -352,12 +358,39 @@ def handle_ask(msg, chat_id):
     # 30B 모델이라 10초를 넘기기도 한다. 그동안 아무 말이 없으면 죽은 줄 안다.
     send_reply(chat_id, "찾아보는 중입니다…")
     try:
-        res = requests.get(ASK_URL, params={'q': query},
+        res = requests.get(ASK_URL, params={'q': query, 'chat_id': str(chat_id), 'who': who},
                            headers={'X-Ask-Key': ASK_KEY}, timeout=90)
-        return res.json().get('text') or "답을 만들지 못했습니다."
+        text = res.json().get('text') or "답을 만들지 못했습니다."
+        LAST_ASK[str(chat_id)] = {'q': query, 'a': text, 'who': who, 'room': room, 'ts': int(time.time() * 1000)}
+        return text
     except Exception as e:
         logger.error(f"질문 실패: {e}")
         return "지금은 답할 수 없습니다. 잠시 뒤 다시 시도해주세요."
+
+def handle_wrong(msg, chat_id, who=''):
+    """!틀림 [한마디] — 이 방의 직전 !질문 답이 틀렸다고 사이트에 알린다.
+
+    봇은 스스로 고치지 않는다. 운영자가 /ask-admin/ 에서 보고 위키·데이터·규칙 중 뭘 고칠지 정한다.
+    """
+    last = LAST_ASK.get(str(chat_id))
+    if not last:
+        return "최근에 답한 질문이 없습니다. !질문 뒤에 !틀림 을 쳐 주세요."
+    note = msg[len('!틀림'):].strip()
+    try:
+        res = requests.post(ASK_REVIEW_URL, json={
+            'chat_id': str(chat_id), 'room': last.get('room', ''), 'question': last['q'], 'answer': last['a'],
+            'reporter': who, 'note': note, 'asked_at': last['ts'],
+        }, headers=_match_headers(), timeout=8)
+        data = res.json()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"틀림 신고 실패: {e}")
+        return "지금은 접수하지 못했습니다. 잠시 뒤 다시 시도해주세요."
+    if not data.get('ok'):
+        return data.get('error') or "접수하지 못했습니다."
+    n = data.get('reports') or 1
+    tail = f" (지금까지 {n}명)" if n > 1 else ""
+    return f"알려주셔서 고맙습니다. 운영자가 확인합니다.{tail}\n\n\"{last['q'][:40]}\" 에 대한 답이 틀린 것으로 접수됐습니다."
+
 
 def handle_macro(msg):
     """!매크로 [사냥/이동/…] — 키셋팅을 글로 안내
@@ -722,7 +755,10 @@ def webhook():
             send_reply(chat_id, handle_route(msg_stripped))
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!질문") and feature_enabled(chat_id, '질문'):
-            send_reply(chat_id, handle_ask(msg_stripped, chat_id))
+            send_reply(chat_id, handle_ask(msg_stripped, chat_id, sender_name, room))
+            return jsonify({"status": "ok"})
+        if (msg_stripped == "!틀림" or msg_stripped.startswith("!틀림 ")) and feature_enabled(chat_id, '질문'):
+            send_reply(chat_id, handle_wrong(msg_stripped, chat_id, sender_name))
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!매크로") and feature_enabled(chat_id, '매크로'):
             send_reply(chat_id, handle_macro(msg_stripped))
