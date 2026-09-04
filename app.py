@@ -56,6 +56,8 @@ ASK_URL = os.getenv('ASK_URL', 'http://100.92.82.79:8899/ask')
 ASK_KEY = os.getenv('ASK_KEY', '')
 # 틀린 답 신고 — `!틀림`을 치면 그 방의 직전 !질문 질문·답을 사이트에 올린다 (X-Bot-Key).
 ASK_REVIEW_URL = os.getenv('ASK_REVIEW_URL', 'https://milddok.cc/api/ask/review')
+# !질문 기록 — 답을 낼 때마다 사이트에 한 줄. /ask-admin/ 의 "많이 묻는 질문 top 20"이 여기서 나온다.
+ASK_LOG_URL = os.getenv('ASK_LOG_URL', 'https://milddok.cc/api/ask/log')
 # 방마다 마지막 !질문 — {chat_id: {q, a, who, ts}}. 재시작하면 비지만 신고는 대개 몇 분 안에 온다.
 LAST_ASK = {}
 
@@ -360,12 +362,26 @@ def handle_ask(msg, chat_id, who='', room=''):
     try:
         res = requests.get(ASK_URL, params={'q': query, 'chat_id': str(chat_id), 'who': who},
                            headers={'X-Ask-Key': ASK_KEY}, timeout=90)
-        text = res.json().get('text') or "답을 만들지 못했습니다."
+        data = res.json()
+        text = data.get('text') or "답을 만들지 못했습니다."
         LAST_ASK[str(chat_id)] = {'q': query, 'a': text, 'who': who, 'room': room, 'ts': int(time.time() * 1000)}
+        _log_ask(chat_id, room, who, query, text, data)
         return text
     except Exception as e:
         logger.error(f"질문 실패: {e}")
         return "지금은 답할 수 없습니다. 잠시 뒤 다시 시도해주세요."
+
+def _log_ask(chat_id, room, who, query, text, data):
+    """질문·답 한 줄을 사이트에 남긴다. 기록이 안 된다고 답을 잃으면 안 된다 — 조용히 넘긴다."""
+    try:
+        requests.post(ASK_LOG_URL, json={
+            'chat_id': str(chat_id), 'room': room, 'who': who, 'question': query, 'answer': text,
+            'source': str(data.get('source') or ''), 'tool': str(data.get('tool') or ''),
+            'found': bool(data.get('found')),
+        }, headers=_match_headers(), timeout=5)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"질문 기록 실패: {e}")
+
 
 def handle_wrong(msg, chat_id, who=''):
     """!틀림 [한마디] — 이 방의 직전 !질문 답이 틀렸다고 사이트에 알린다.
