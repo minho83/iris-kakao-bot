@@ -312,6 +312,10 @@ def handle_help(chat_id):
         lines.append("  예) !매크로 사냥")
     if len(lines) == 1:
         return "이 방에서 사용할 수 있는 기능이 없습니다."
+    custom = room_notices.commands_for(chat_id)
+    if custom:
+        lines.append("\n[이 방의 명령어]")
+        lines.extend(f"- {c}" for c in custom)
     lines.append(f"\n파티 게시판: {MATCH_WEB_URL}")
     return "\n".join(lines)
 
@@ -681,6 +685,11 @@ def webhook():
         if msg_stripped == "!기능":
             if sender_name == BOT_OWNER:
                 send_reply(chat_id, handle_feature_status(chat_id))
+            return jsonify({"status": "ok"})
+
+        # 방마다 정해 둔 명령어(/notice-admin/ '명령어를 치면') — 정확히 그 말일 때만 답한다.
+        # 봇에 원래 있는 명령과 겹치는 말은 사이트가 저장 때 막는다.
+        if room_notices.on_command(chat_id, msg_stripped, sender_name, room):
             return jsonify({"status": "ok"})
 
         # 대화 저장 — '질문'을 켠 방만. 명령어와 봇 자기 말은 넣지 않는다.

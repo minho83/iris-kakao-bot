@@ -167,6 +167,27 @@ class Notices:
         # 오래된 기록은 버린다
         self.join_seen = {k: v for k, v in self.join_seen.items() if now - v < JOIN_COOLDOWN_SEC}
 
+    # ── 명령어 ───────────────────────────────────────────
+    def on_command(self, chat_id, msg, sender_name='', room=''):
+        """방에서 정해 둔 말(`!디스코드` 등)을 치면 적어 둔 글로 답한다. 답했으면 True.
+
+        정확히 그 말일 때만이다 — `!디스코드 초대`처럼 뒤에 뭘 붙이면 안 잡는다.
+        봇에 원래 있는 명령과 겹치는 말은 사이트가 저장 때 막는다.
+        """
+        text = (msg or '').strip()
+        if not text.startswith('!'):
+            return False
+        for n in self._items(chat_id, 'command'):
+            if n.get('trigger') and text == n['trigger']:
+                self.send(chat_id, render(n.get('text'), sender_name, n.get('room_name') or room))
+                logger.info(f"명령어 공지 {n['trigger']} -> {chat_id}")
+                return True
+        return False
+
+    def commands_for(self, chat_id):
+        """이 방에 정해 둔 명령어 목록 (!도움말에 붙인다)."""
+        return [n['trigger'] for n in self._items(chat_id, 'command') if n.get('trigger')]
+
     # ── 시각 ─────────────────────────────────────────────
     def tick(self):
         now = datetime.now(KST)
