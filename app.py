@@ -310,6 +310,8 @@ def handle_help(chat_id):
         lines.append("  예) !퀘스트 구피의부탁1")
         lines.append("!길찾기 출발맵 도착맵 — 가는 길")
         lines.append("  예) !길찾기 밀레스마을 나겔링마을")
+        lines.append("!20단 — 그 단 필요 경험치·풀경험치 한 번 획득량 (!8단 20단 은 표)")
+        lines.append("!단수 체력 300만 마력 150만 — 지금 몇 단인지")
     if room.get('질문'):
         lines.append("!질문 궁금한 것 — 방에 쌓인 대화에서 찾아 답합니다")
         lines.append("  예) !질문 초보자 뭐부터 해야해요")
@@ -424,6 +426,38 @@ def handle_quest(msg):
     if not query:
         return "퀘스트 이름을 입력해주세요.\n예) !퀘스트 구피의부탁1"
     return _site_get('/quest', {'q': query})
+
+
+# `!20단` / `!8단 20단` / `!8단~20단`. 숫자 뒤 '단'은 두 번째는 생략해도 된다(!8단 20).
+DANSU_RE = re.compile(r'^!(\d{1,2})단(?:\s*[~\-]?\s*(\d{1,2})단?)?$')
+# `!단수 체력 300만 마력 150만` — 만·억 단위와 쉼표를 받는다.
+DANSU_STAT_RE = re.compile(r'^!단수\s*(?:체력|체|hp)\s*([\d,만억.]+)\s*(?:마력|마|mp)\s*([\d,만억.]+)$', re.I)
+
+
+def _korean_number(s):
+    """'300만' '1.5억' '3,000,000' → 정수. 못 읽으면 None."""
+    s = s.replace(',', '').strip()
+    m = re.fullmatch(r'(\d+(?:\.\d+)?)(만|억)?', s)
+    if not m:
+        return None
+    n = float(m.group(1)) * {'만': 10000, '억': 100000000, None: 1}[m.group(2)]
+    return int(round(n))
+
+
+def handle_dansu(msg):
+    """단수 — 라르 계산기의 단수표·풀경험치표 그대로. 계산은 사이트가 한다."""
+    m = DANSU_STAT_RE.match(msg)
+    if m:
+        hp, mp = _korean_number(m.group(1)), _korean_number(m.group(2))
+        if hp is None or mp is None:
+            return "체력·마력을 숫자로 적어주세요.\n예) !단수 체력 300만 마력 150만"
+        return _site_get('/dansu', {'hp': hp, 'mp': mp})
+    m = DANSU_RE.match(msg)
+    if not m:
+        return "예) !20단 / !8단 20단 / !단수 체력 300만 마력 150만"
+    if m.group(2):
+        return _site_get('/dansu', {'from': int(m.group(1)), 'to': int(m.group(2))})
+    return _site_get('/dansu', {'n': int(m.group(1))})
 
 
 def handle_route(msg):
@@ -763,6 +797,9 @@ def webhook():
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!업데이트") and feature_enabled(chat_id, '업데이트'):
             send_reply(chat_id, handle_update(msg_stripped))
+            return jsonify({"status": "ok"})
+        if (DANSU_RE.match(msg_stripped) or msg_stripped.startswith("!단수")) and feature_enabled(chat_id, '퀘스트'):
+            send_reply(chat_id, handle_dansu(msg_stripped))
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!퀘스트") and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_quest(msg_stripped))
