@@ -308,8 +308,6 @@ def handle_help(chat_id):
     if room.get('퀘스트'):
         lines.append("!퀘스트 이름 — 동선·필요한 것·보상")
         lines.append("  예) !퀘스트 구피의부탁1")
-        lines.append("!길찾기 출발맵 도착맵 — 가는 길")
-        lines.append("  예) !길찾기 밀레스마을 나겔링마을")
         lines.append("!20단 — 그 단 필요 경험치·풀경험치 한 번 획득량 (!8단 20단 은 표)")
         lines.append("!단수 체력 300만 마력 150만 — 지금 몇 단인지")
     if room.get('질문'):
@@ -804,9 +802,7 @@ def webhook():
         if msg_stripped.startswith("!퀘스트") and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_quest(msg_stripped))
             return jsonify({"status": "ok"})
-        if msg_stripped.startswith("!길찾기") and feature_enabled(chat_id, '퀘스트'):
-            send_reply(chat_id, handle_route(msg_stripped))
-            return jsonify({"status": "ok"})
+        # !길찾기는 2026-09-08 뺐다 — 게임 안 길찾기가 잘 된다(운영자). handle_route는 남겨 둔다.
         if msg_stripped.startswith("!질문") and feature_enabled(chat_id, '질문'):
             send_reply(chat_id, handle_ask(msg_stripped, chat_id, sender_name, room))
             return jsonify({"status": "ok"})
