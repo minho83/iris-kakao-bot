@@ -3,3 +3,4 @@ room_features.json
 test_match_local.py
 notice_state.json
 rooms.json
+room_names.json

@@ -60,6 +60,48 @@ ASK_REVIEW_URL = os.getenv('ASK_REVIEW_URL', 'https://milddok.cc/api/ask/review'
 ASK_LOG_URL = os.getenv('ASK_LOG_URL', 'https://milddok.cc/api/ask/log')
 # 방마다 마지막 !질문 — {chat_id: {q, a, who, ts}}. 재시작하면 비지만 신고는 대개 몇 분 안에 온다.
 LAST_ASK = {}
+# 방 사람 닉네임 — {chat_id: {이름: 마지막 본 때}}. "쿠모삐"처럼 닉네임 한 낱말만 치면 GB10의 사람 질문 차단이
+# 못 잡고(조사가 없다) 방 대화로 그 사람을 요약해 버렸다. 봇은 누가 방에 있는지 아니 여기서 먼저 막는다.
+NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_names.json')
+try:
+    with open(NAMES_FILE, encoding='utf-8') as _f:
+        ROOM_NAMES = json.load(_f)
+except (OSError, ValueError):
+    ROOM_NAMES = {}
+_NAME_SPLIT = re.compile(r'[/\s(),.·|]+')
+
+
+def _name_tokens(full):
+    """'성은/최강법직/도박신고1336' → {'성은', '최강법직', '도박신고1336', 전체}. 두 글자 미만은 버린다."""
+    full = (full or '').strip()
+    toks = {t for t in _NAME_SPLIT.split(full) if len(t) >= 2}
+    if len(full) >= 2:
+        toks.add(full)
+    return toks
+
+
+def note_name(chat_id, full):
+    names = ROOM_NAMES.setdefault(str(chat_id), {})
+    fresh = False
+    for t in _name_tokens(full):
+        if t not in names:
+            fresh = True
+        names[t] = int(time.time())
+    if fresh:
+        try:
+            with open(NAMES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(ROOM_NAMES, f, ensure_ascii=False)
+        except OSError as e:
+            logger.error(f"닉네임 저장 오류: {e}")
+
+
+def is_member_name(chat_id, query):
+    """질문이 이 방 누군가의 닉네임(또는 그 조각) 그대로인가. '쿠모삐', '밀떡밀떡'은 잡고 '쿠모삐 어디감'은 안 잡는다."""
+    q = re.sub(r'\s+', '', (query or '')).lower()
+    if len(q) < 2:
+        return False
+    names = ROOM_NAMES.get(str(chat_id), {})
+    return any(q == re.sub(r'\s+', '', n).lower() for n in names)
 
 # 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
 BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
@@ -356,6 +398,8 @@ def handle_ask(msg, chat_id, who='', room=''):
     query = msg[len('!질문'):].strip()
     if not query:
         return "무엇이 궁금한지 같이 적어주세요.\n예) !질문 초보자 뭐부터 해야해요"
+    if is_member_name(chat_id, query):
+        return "사람에 대한 것은 답하지 않습니다. 게임에 대해 물어봐 주세요."
 
     # 30B 모델이라 10초를 넘기기도 한다. 그동안 아무 말이 없으면 죽은 줄 안다.
     send_reply(chat_id, "찾아보는 중입니다…")
@@ -735,6 +779,8 @@ def webhook():
         if msg_type == '0':
             feed = _parse_feed(msg)
             if feed.get('feedType') == 4:
+                for m in feed.get('members') or []:
+                    note_name(chat_id, (m or {}).get('nickName'))
                 room_notices.on_join(chat_id, room, feed.get('members') or [])
             return jsonify({"status": "ok"})
 
@@ -755,6 +801,7 @@ def webhook():
             return jsonify({"status": "ok"})
 
         sender_name = sender.split('/')[0].strip() if '/' in sender else sender.strip()
+        note_name(chat_id, sender)
 
         # 방별 기능 토글 (BOT_OWNER 전용, 다른 사용자는 무응답)
         toggle_match = TOGGLE_RE.match(msg_stripped)
