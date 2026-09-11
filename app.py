@@ -105,7 +105,16 @@ def is_member_name(chat_id, query):
     names = ROOM_NAMES.get(str(chat_id), {})
     if not names:
         return False
-
+    flat = {re.sub(r'\s+', '', n).lower() for n in names}
+    q = (query or '').strip()
+    whole = re.sub(r'\s+', '', q).lower()
+    if len(whole) >= 2 and whole in flat:
+        return True
+    for w in re.split(r'\s+', q):
+        w = re.sub(r'[?!.,~]+$', '', w).lower()
+        if len(w) >= 2 and w in flat:
+            return True
+    return False
 
 # 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
 BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
@@ -120,16 +129,6 @@ _last_ask_time = 0.0
 KST = timezone(timedelta(hours=9))
 MATCH_JOB_LABEL = {'warrior': '전사', 'rogue': '도적', 'mage': '법사', 'cleric': '직자', 'taoist': '도가'}
 MATCH_SERVER_LABEL = {'seo': '세오', 'shus': '셔스'}
-    flat = {re.sub(r'\s+', '', n).lower() for n in names}
-    q = (query or '').strip()
-    whole = re.sub(r'\s+', '', q).lower()
-    if len(whole) >= 2 and whole in flat:
-        return True
-    for w in re.split(r'\s+', q):
-        w = re.sub(r'[?!.,~]+$', '', w).lower()
-        if len(w) >= 2 and w in flat:
-            return True
-    return False
 
 
 def _admin_headers():
