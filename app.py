@@ -99,26 +99,22 @@ def note_name(chat_id, full):
 
 
 def is_member_name(chat_id, query):
-    """질문이 이 방 누군가의 닉네임(또는 그 조각) 그대로인가. '쿠모삐', '밀떡밀떡'은 잡고 '쿠모삐 어디감'은 안 잡는다."""
-    q = re.sub(r'\s+', '', (query or '')).lower()
-    if len(q) < 2:
-        return False
+    """질문이 이 방 누군가의 닉네임이거나, 질문의 낱말 하나가 닉네임이면 사람 질문이다.
+    '쿠모삐'도, '쿠모삐 퀘스트'도 막는다 — 후자를 GB10에 보내면 '퀘스트'로 위키를 찾아 쿠모삐를 억지로 엮는다
+    ("쿠모삐 퀘스트는 승급 무기업 퀘스트와 관련"). 낱말은 띄어쓰기 기준, 두 글자 이상."""
     names = ROOM_NAMES.get(str(chat_id), {})
-    return any(q == re.sub(r'\s+', '', n).lower() for n in names)
-
-# 방별 기능 토글 — BOT_OWNER가 '!<기능>사용'/'!<기능>해제'로 방마다 켜고 끈다.
-BOT_OWNER = os.getenv('BOT_OWNER', '밀떡밀떡')
-FEATURES = ('파티봇', '현자', '업데이트', '퀘스트', '매크로', '질문', '도움말')
-FEATURES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_features.json')
-TOGGLE_RE = re.compile(r'^!(파티봇|현자|업데이트|퀘스트|매크로|질문|도움말)\s*(사용|해제)$')
-
-# wikibot 검색(/ask/*)은 자체 rate limit이 있어 호출 간격을 띄운다
-WIKIBOT_ASK_DELAY = 3.5
-_last_ask_time = 0.0
-
-KST = timezone(timedelta(hours=9))
-MATCH_JOB_LABEL = {'warrior': '전사', 'rogue': '도적', 'mage': '법사', 'cleric': '직자', 'taoist': '도가'}
-MATCH_SERVER_LABEL = {'seo': '세오', 'shus': '셔스'}
+    if not names:
+        return False
+    flat = {re.sub(r'\s+', '', n).lower() for n in names}
+    q = (query or '').strip()
+    whole = re.sub(r'\s+', '', q).lower()
+    if len(whole) >= 2 and whole in flat:
+        return True
+    for w in re.split(r'\s+', q):
+        w = re.sub(r'[?!.,~]+$', '', w).lower()
+        if len(w) >= 2 and w in flat:
+            return True
+    return False
 
 
 def _admin_headers():
