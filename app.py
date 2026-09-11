@@ -68,15 +68,18 @@ try:
         ROOM_NAMES = json.load(_f)
 except (OSError, ValueError):
     ROOM_NAMES = {}
-_NAME_SPLIT = re.compile(r'[/\s(),.·|]+')
+_NAME_STOP = {'뉴비', '초보', '복귀', '복귀뉴비', '오픈채팅봇', 'Iris'}
 
 
 def _name_tokens(full):
-    """'성은/최강법직/도박신고1336' → {'성은', '최강법직', '도박신고1336', 전체}. 두 글자 미만은 버린다."""
+    """'성은/최강법직/도박신고1336' → {'성은', 전체}. 닉네임은 첫 조각이다 — 뒤 조각은 직업·단수라
+    '도가'·'15단' 같은 게임 낱말이 섞이고, 그것까지 사람으로 보면 '!질문 도가'를 거절하게 된다."""
     full = (full or '').strip()
-    toks = {t for t in _NAME_SPLIT.split(full) if len(t) >= 2}
-    if len(full) >= 2:
-        toks.add(full)
+    first = re.sub(r'\(.*?\)', '', full.split('/')[0]).strip()
+    toks = set()
+    for t in (first, full):
+        if len(t) >= 2 and not re.fullmatch(r'[\d\s단렙]+', t) and t not in _NAME_STOP:
+            toks.add(t)
     return toks
 
 
