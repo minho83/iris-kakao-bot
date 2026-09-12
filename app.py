@@ -11,6 +11,7 @@ import json
 import time
 import random
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -136,8 +137,19 @@ def _admin_headers():
 
 
 # ── 유틸 ─────────────────────────────────────────────────
+# ── 봇 테스트 (스튜디오 "봇 테스트" 탭) ─────────────────────
+# 사이트가 테스트 요청을 쌓아 두면 여기서 몇 초마다 가져가 **실제 웹훅 코드**로 처리하고 답을 돌려준다.
+# 테스트 방(chat_id 'test')의 답은 카톡으로 보내지 않고 모아 둔다. 방 기능은 전부 켜진 것으로 친다.
+TEST_CHAT_ID = 'test'
+BOT_TEST_URL = os.getenv('BOT_TEST_URL', 'https://milddok.cc/api/bot-test')
+TEST_REPLIES = []
+
+
 def send_reply(chat_id, message):
     """Iris를 통해 채팅방에 메시지 전송"""
+    if str(chat_id) == TEST_CHAT_ID:
+        TEST_REPLIES.append(str(message))
+        return
     try:
         payload = {"type": "text", "room": str(chat_id), "data": message}
         resp = requests.post(f"{IRIS_URL}/reply", json=payload, timeout=5)
@@ -181,8 +193,15 @@ def _save_features(data):
         logger.error(f"기능 설정 저장 오류: {e}")
 
 
+def room_features(chat_id):
+    """이 방에 켜진 기능 dict. 테스트 방(스튜디오 '봇 테스트')은 전부 켜진 것으로 본다."""
+    if str(chat_id) == TEST_CHAT_ID:
+        return {f: True for f in FEATURES}
+    return _load_features().get(str(chat_id), {})
+
+
 def feature_enabled(chat_id, feature):
-    return bool(_load_features().get(str(chat_id), {}).get(feature))
+    return bool(room_features(chat_id).get(feature))
 
 
 def handle_feature_toggle(feature, action, chat_id):
@@ -196,7 +215,7 @@ def handle_feature_toggle(feature, action, chat_id):
 
 def handle_feature_status(chat_id):
     """'!기능' — 이 방의 토글 상태 (BOT_OWNER 전용)."""
-    room = _load_features().get(str(chat_id), {})
+    room = room_features(chat_id)
     status = "\n".join(f"- {f}: {'켜짐' if room.get(f) else '꺼짐'}" for f in FEATURES)
     return f"[이 방의 기능 설정]\n{status}\n\n켜기: !현자사용 · 끄기: !현자해제"
 
@@ -349,7 +368,7 @@ def handle_update(msg):
 
 
 def handle_help(chat_id):
-    room = _load_features().get(str(chat_id), {})
+    room = room_features(chat_id)
     lines = ["[밀떡봇 도움말]"]
     if room.get('파티봇'):
         lines.append("!파티결성 파티명 인원 — 파티 게시판에 등록")
@@ -430,6 +449,8 @@ def handle_ask(msg, chat_id, who='', room=''):
 
 def _log_ask(chat_id, room, who, query, text, data):
     """질문·답 한 줄을 사이트에 남긴다. 기록이 안 된다고 답을 잃으면 안 된다 — 조용히 넘긴다."""
+    if str(chat_id) == TEST_CHAT_ID:
+        return   # 스튜디오 '봇 테스트'는 top 20에 섞지 않는다
     try:
         requests.post(ASK_LOG_URL, json={
             'chat_id': str(chat_id), 'room': room, 'who': who, 'question': query, 'answer': text,
@@ -893,6 +914,43 @@ def webhook():
         return jsonify({"status": "error"}), 500
 
 
+def _run_bot_test(test):
+    """테스트 하나를 웹훅과 같은 길로 돌린다. Flask test client라 실제 요청과 같은 코드가 돈다."""
+    TEST_REPLIES.clear()
+    payload = {
+        'msg': test.get('text', ''), 'room': '봇 테스트', 'sender': f"{test.get('sender') or '운영자'}/테스트",
+        'json': {'type': '1', 'chat_id': TEST_CHAT_ID, 'user_id': 'test', 'id': str(test.get('id')),
+                 'v': '{"isMine":false}'},
+    }
+    try:
+        with app.test_client() as c:
+            c.post('/webhook', json=payload)
+    except Exception as e:  # noqa: BLE001
+        TEST_REPLIES.append(f"(봇 오류: {e})")
+    reply = '\n\n'.join(TEST_REPLIES)
+    try:
+        requests.post(f"{BOT_TEST_URL}/{test.get('id')}", json={'reply': reply}, headers=_match_headers(), timeout=8)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"봇 테스트 결과 전송 실패: {e}")
+
+
+def bot_test_loop():
+    last_seen = 0.0
+    while True:
+        try:
+            res = requests.get(f"{BOT_TEST_URL}/next", headers=_match_headers(), timeout=8)
+            test = res.json().get('test') if res.ok else None
+            if test:
+                last_seen = time.time()
+                logger.info(f"봇 테스트 #{test.get('id')}: {str(test.get('text'))[:60]}")
+                _run_bot_test(test)
+                continue          # 하나 끝났으면 바로 다음 것을 본다
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"봇 테스트 폴링 실패: {e}")
+        time.sleep(3 if time.time() - last_seen < 600 else 30)
+
+
 if __name__ == '__main__':
+    threading.Thread(target=bot_test_loop, name='bot-test', daemon=True).start()
     room_notices.start()
     app.run(host='0.0.0.0', port=5000)
