@@ -914,6 +914,20 @@ def webhook():
         return jsonify({"status": "error"}), 500
 
 
+BOT_TEST_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot_test_state.json')
+DAILY_CHECK_HOUR = 7   # 매일 이 시(KST) 이후 처음 도는 회차에 점검 목록을 돌린다
+
+
+def _passes(reply, expect):
+    """점검 판정 — 사이트 src/bot-test/logic.js passes()와 같은 규칙. 띄어쓰기 지우고 포함 여부, `|`는 그중 하나."""
+    alts = [re.sub(r'\s+', '', a) for a in str(expect or '').split('|')]
+    alts = [a for a in alts if a]
+    if not alts:
+        return None
+    r = re.sub(r'\s+', '', str(reply or ''))
+    return any(a in r for a in alts)
+
+
 def _run_bot_test(test):
     """테스트 하나를 웹훅과 같은 길로 돌린다. Flask test client라 실제 요청과 같은 코드가 돈다."""
     TEST_REPLIES.clear()
@@ -932,19 +946,79 @@ def _run_bot_test(test):
         requests.post(f"{BOT_TEST_URL}/{test.get('id')}", json={'reply': reply}, headers=_match_headers(), timeout=8)
     except Exception as e:  # noqa: BLE001
         logger.error(f"봇 테스트 결과 전송 실패: {e}")
+    return reply
+
+
+def _daily_check_due():
+    """오늘 아직 안 돌렸고 시각이 지났으면 True. 상태 파일에 날짜를 적어 재시작해도 하루 한 번만."""
+    now = datetime.now(KST)
+    if now.hour < DAILY_CHECK_HOUR:
+        return False
+    today = now.strftime('%Y-%m-%d')
+    try:
+        with open(BOT_TEST_STATE_FILE, encoding='utf-8') as f:
+            if json.load(f).get('daily') == today:
+                return False
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(BOT_TEST_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'daily': today}, f)
+    except OSError as e:
+        logger.error(f"봇 점검 상태 저장 오류: {e}")
+    return True
+
+
+def _start_daily_check(state):
+    """사이트에 점검 목록을 줄 세워 달라고 한다. 이후 /next로 하나씩 내려온다."""
+    try:
+        res = requests.post(f"{BOT_TEST_URL}/run", json={'run': 'daily'}, headers=_match_headers(), timeout=8)
+        data = res.json() if res.ok else {}
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"매일 점검 시작 실패: {e}")
+        return
+    if not data.get('count'):
+        logger.info("매일 점검: 점검 목록이 비어 있어 건너뜀")
+        return
+    state.update({'run': data.get('run'), 'alert': str(data.get('alert_chat_id') or ''),
+                  'total': int(data.get('count') or 0), 'fails': []})
+    logger.info(f"매일 점검 시작: {state['total']}개, 알림 방 {state['alert'] or '없음'}")
+
+
+def _finish_daily_check(state):
+    """회차가 다 돌았다. 어긋난 게 있고 알릴 방이 정해져 있으면 카톡으로 보낸다(전부 통과면 조용히)."""
+    total, fails, alert = state.get('total', 0), state.get('fails', []), state.get('alert', '')
+    state.clear()
+    logger.info(f"매일 점검 끝: {total}개 중 {len(fails)}개 어긋남")
+    if not fails or not alert:
+        return
+    lines = [f"[봇 자동 점검] {datetime.now(KST).strftime('%m/%d %H:%M')}", f"{total}개 중 {len(fails)}개 어긋남"]
+    for text, expect in fails[:10]:
+        lines.append(f"✗ {text} → '{expect}' 없음")
+    if len(fails) > 10:
+        lines.append(f"… 외 {len(fails) - 10}개")
+    lines.append("확인: https://milddok.cc/wiki-studio/ (봇 테스트 탭)")
+    send_reply(alert, '\n'.join(lines))
 
 
 def bot_test_loop():
     last_seen = 0.0
+    daily = {}    # 도는 중인 매일 점검 회차 {run, alert, total, fails}
     while True:
         try:
+            if not daily and _daily_check_due():
+                _start_daily_check(daily)
             res = requests.get(f"{BOT_TEST_URL}/next", headers=_match_headers(), timeout=8)
             test = res.json().get('test') if res.ok else None
             if test:
                 last_seen = time.time()
                 logger.info(f"봇 테스트 #{test.get('id')}: {str(test.get('text'))[:60]}")
-                _run_bot_test(test)
+                reply = _run_bot_test(test)
+                if daily and test.get('run') == daily.get('run') and _passes(reply, test.get('expect')) is False:
+                    daily['fails'].append((test.get('text'), test.get('expect')))
                 continue          # 하나 끝났으면 바로 다음 것을 본다
+            if daily:
+                _finish_daily_check(daily)
         except Exception as e:  # noqa: BLE001
             logger.error(f"봇 테스트 폴링 실패: {e}")
         time.sleep(3 if time.time() - last_seen < 600 else 30)
