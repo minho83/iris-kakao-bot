@@ -144,6 +144,32 @@ TEST_CHAT_ID = 'test'
 BOT_TEST_URL = os.getenv('BOT_TEST_URL', 'https://milddok.cc/api/bot-test')
 TEST_REPLIES = []
 
+# ── 운영자 알림 ──
+# 디스코드(밀떡봇 토큰, #자료수집) + 카톡(관리 화면에서 정한 방). 둘 중 하나가 죽어도 다른 쪽으로 간다.
+# 사이트가 남긴 알림(bot_alerts)도, 봇이 스스로 본 이상(GB10 무응답·사이트 무응답·야간 작업 누락)도 전부 여기로.
+DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN', '')
+DISCORD_ALERT_CHANNEL_ID = os.getenv('DISCORD_ALERT_CHANNEL_ID', '')
+HEARTBEAT_URL = os.getenv('HEARTBEAT_URL', 'https://milddok.cc/api/heartbeat')
+HEALTH_URL = os.getenv('HEALTH_URL', 'https://milddok.cc/api/health')
+ALERT_CHAT = {'id': ''}     # /api/bot-test/next 응답의 alert_chat_id를 받아 둔다
+
+
+def alert(text):
+    """운영자에게 알린다. 실패해도 예외로 죽지 않는다."""
+    logger.warning(f"알림: {text[:120]}")
+    if DISCORD_BOT_TOKEN and DISCORD_ALERT_CHANNEL_ID:
+        try:
+            requests.post(f"https://discord.com/api/v10/channels/{DISCORD_ALERT_CHANNEL_ID}/messages",
+                          json={'content': text[:1900]},
+                          headers={'Authorization': f"Bot {DISCORD_BOT_TOKEN}"}, timeout=10)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"디스코드 알림 실패: {e}")
+    if ALERT_CHAT['id']:
+        try:
+            send_reply(ALERT_CHAT['id'], text)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"카톡 알림 실패: {e}")
+
 
 def send_reply(chat_id, message):
     """Iris를 통해 채팅방에 메시지 전송"""
@@ -1016,6 +1042,57 @@ def _finish_daily_check(state):
     send_reply(alert, '\n'.join(lines))
 
 
+def watchdog_loop():
+    """1분마다: 심장박동을 사이트에 적고, GB10·사이트가 답하는지 보고, GB10 야간 작업(daily·bench)이 26시간 넘게 안 찍혔으면 알린다.
+    같은 알림은 상태가 바뀔 때 한 번씩만(죽음 → 복구)."""
+    state = {'gb10': 0, 'site': 0, 'gb10_down': False, 'site_down': False, 'stale': {}}
+    while True:
+        try:
+            requests.post(HEARTBEAT_URL, json={'key': 'bot', 'note': 'iris-bot'}, headers=_match_headers(), timeout=8)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"심장박동 실패: {e}")
+        # GB10 (!질문 두뇌)
+        try:
+            r = requests.get(ASK_URL, params={'q': ''}, headers={'X-Ask-Key': ASK_KEY}, timeout=10)
+            ok = r.status_code == 200
+        except Exception:  # noqa: BLE001
+            ok = False
+        state['gb10'] = 0 if ok else state['gb10'] + 1
+        if state['gb10'] >= 3 and not state['gb10_down']:
+            state['gb10_down'] = True
+            alert("[GB10 무응답] !질문 두뇌(GB10 :8899)가 3분째 답이 없습니다. 그동안 !질문은 '사이트를 불러오지 못했습니다'로 나갑니다. GB10에서 `systemctl --user status chat-ask` 를 보세요.")
+        elif ok and state['gb10_down']:
+            state['gb10_down'] = False
+            alert("[GB10 복구] !질문 두뇌가 다시 답합니다.")
+        # 사이트
+        try:
+            ok = requests.get(HEALTH_URL, timeout=10).status_code == 200
+        except Exception:  # noqa: BLE001
+            ok = False
+        state['site'] = 0 if ok else state['site'] + 1
+        if state['site'] >= 3 and not state['site_down']:
+            state['site_down'] = True
+            alert("[사이트 무응답] milddok.cc /api/health 가 3분째 실패합니다. Cloudflare 배포 상태를 보세요.")
+        elif ok and state['site_down']:
+            state['site_down'] = False
+            alert("[사이트 복구] milddok.cc 가 다시 답합니다.")
+        # GB10 야간 작업 — 심장박동이 오래됐나 (하루 한 번만 알림)
+        try:
+            d = requests.get(HEARTBEAT_URL, headers=_match_headers(), timeout=10).json()
+            now = int(d.get('now') or time.time() * 1000)
+            beats = {b['key']: int(b['at']) for b in d.get('beats', [])}
+            for key, label in (('gb10-daily', '매일 색인(daily.sh)'), ('gb10-bench', '매일 bench')):
+                at = beats.get(key)
+                stale = at is None or now - at > 26 * 3600 * 1000
+                day = datetime.now(KST).strftime('%Y-%m-%d')
+                if stale and state['stale'].get(key) != day and at is not None:
+                    state['stale'][key] = day
+                    alert(f"[GB10 작업 누락] {label}이(가) {int((now - at) / 3600000)}시간째 안 돌았습니다. GB10 `journalctl --user` 를 보세요.")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"심장박동 읽기 실패: {e}")
+        time.sleep(60)
+
+
 def bot_test_loop():
     last_seen = 0.0
     daily = {}    # 도는 중인 매일 점검 회차 {run, alert, total, fails}
@@ -1026,12 +1103,11 @@ def bot_test_loop():
             res = requests.get(f"{BOT_TEST_URL}/next", headers=_match_headers(), timeout=8)
             data = res.json() if res.ok else {}
             test = data.get('test')
-            # 사이트가 남긴 운영자 알림(bench 회귀 등) — 정해 둔 방으로 보낸다. 방이 없으면 로그에만.
+            if 'alert_chat_id' in data:
+                ALERT_CHAT['id'] = str(data.get('alert_chat_id') or '')
+            # 사이트가 남긴 운영자 알림(bench 회귀 등) — 디스코드 + 정해 둔 방으로.
             for text in data.get('alerts') or []:
-                chat = str(data.get('alert_chat_id') or '')
-                logger.info(f"사이트 알림: {text[:80]}")
-                if chat:
-                    send_reply(chat, text)
+                alert(text)
             if test:
                 last_seen = time.time()
                 logger.info(f"봇 테스트 #{test.get('id')}: {str(test.get('text'))[:60]}")
@@ -1048,5 +1124,6 @@ def bot_test_loop():
 
 if __name__ == '__main__':
     threading.Thread(target=bot_test_loop, name='bot-test', daemon=True).start()
+    threading.Thread(target=watchdog_loop, name='watchdog', daemon=True).start()
     room_notices.start()
     app.run(host='0.0.0.0', port=5000)
