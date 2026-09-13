@@ -34,6 +34,8 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s'
 )
 logger = logging.getLogger(__name__)
+# Flask 접속 로그("POST /webhook HTTP/1.1" 200)는 웹훅마다 한 줄이라 로그의 절반이었다. 경고 이상만.
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 # Iris(redroid) reply 엔드포인트
 IRIS_URL = os.getenv('IRIS_URL', 'http://localhost:3000')
@@ -842,7 +844,10 @@ def health():
 def webhook():
     try:
         data = request.get_json(silent=True) or {}
-        logger.info(f"받은 데이터: {data}")
+        # 원문 통째 기록은 DEBUG로. INFO엔 방·보낸이(앞 조각)·첫 40자만 — 84일간 86MB(로그의 90%)가 user_id·원문·v 블롭이었다(2026-09-13).
+        logger.debug(f"받은 데이터: {data}")
+        _who = str(data.get('sender') or '').split('/')[0]
+        logger.info(f"메시지 {data.get('room', '')} · {_who}: {str(data.get('msg', ''))[:40]!r}")
 
         msg = data.get('msg', '')
         room = data.get('room', '')
