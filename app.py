@@ -473,8 +473,11 @@ def handle_ask(msg, chat_id, who='', room=''):
     except Exception as e:
         logger.error(f"질문 실패: {e}")
         # 축소 모드 — GB10(!질문 두뇌)이 안 답하면 사이트 자료(아이템·퀘스트·기술·위키 검색)로라도 답한다. 방 대화·문장 만들기는 못 한다.
-        fallback = _site_get('/search', {'q': _fallback_terms(query), 'limit': 3})
-        if fallback and '불러오지 못했습니다' not in fallback:
+        terms = _fallback_terms(query)
+        fallback = _site_get('/item', {'q': terms})          # 아이템이 제일 흔한 물음 — 통합 검색엔 아이템이 없다
+        if not fallback or '그런 아이템은 없습니다' in fallback or '불러오지 못했습니다' in fallback:
+            fallback = _site_get('/search', {'q': terms, 'limit': 3})
+        if fallback and '불러오지 못했습니다' not in fallback and '검색 결과가 없습니다' not in fallback:
             return "(!질문 두뇌가 응답하지 않아 사이트 자료로만 찾았습니다)\n\n" + fallback
         return "지금은 답할 수 없습니다. 잠시 뒤 다시 시도해주세요."
 
@@ -498,7 +501,6 @@ _QWORDS = re.compile(r'^(어디|어떻|얼마|몇|뭐|무엇|왜|언제|누가|�
 def _fallback_terms(query):
     """축소 모드용 검색어 — 통합 검색은 문장이 아니라 낱말을 받는다. 물음말·조사 붙은 토막을 빼고 앞 두 낱말만."""
     words = [w for w in re.split(r'\s+', query.strip()) if w and not _QWORDS.match(w)]
-    words = [re.sub(r'(은|는|이|가|을|를|의|에|로|도)$', '', w) if len(w) > 2 else w for w in words]
     return ' '.join(words[:2]) or query.strip()
 
 
