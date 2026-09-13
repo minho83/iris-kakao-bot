@@ -381,6 +381,7 @@ def handle_help(chat_id):
         lines.append("!업데이트 — 최신 업데이트 확인")
     if room.get('퀘스트'):
         lines.append("!퀘스트 이름 — 동선·필요한 것·보상")
+        lines.append("!주간퀘 5단계 — 주간 퀘스트 단계별 재료·적룡굴 드랍처 (단계 없이 치면 목록)")
         lines.append("  예) !퀘스트 구피의부탁1")
         lines.append("!20단 — 그 단 필요 경험치·풀경험치 한 번 획득량 (!8단 20단 은 표)")
         lines.append("!단수 체력 300만 마력 150만 — 지금 몇 단인지")
@@ -495,6 +496,12 @@ def handle_macro(msg):
     """
     query = msg[len('!매크로'):].strip()
     return _site_get('/macro', {'q': query})
+
+def handle_weekly(msg):
+    """!주간퀘 [N단계|최고급] — 주간 퀘스트 단계별 재료와 적룡굴 드랍처 (운영자 확인 표)"""
+    query = msg[len('!주간퀘'):].strip()
+    return _site_get('/weekly', {'q': query})
+
 
 def handle_quest(msg):
     """!퀘스트 [이름] — 동선·필요한 것·보상"""
@@ -882,6 +889,9 @@ def webhook():
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!퀘스트") and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_quest(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!주간퀘") and feature_enabled(chat_id, '퀘스트'):
+            send_reply(chat_id, handle_weekly(msg_stripped))
             return jsonify({"status": "ok"})
         # !길찾기는 2026-09-08 뺐다 — 게임 안 길찾기가 잘 된다(운영자). handle_route는 남겨 둔다.
         if msg_stripped.startswith("!질문") and feature_enabled(chat_id, '질문'):
