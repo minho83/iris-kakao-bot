@@ -482,6 +482,11 @@ def handle_wrong(msg, chat_id, who=''):
         return "지금은 접수하지 못했습니다. 잠시 뒤 다시 시도해주세요."
     if not data.get('ok'):
         return data.get('error') or "접수하지 못했습니다."
+    # GB10에 바로 알린다 — 안 알리면 30초까지 같은 답이 또 나간다(2026-09-13 '50단' 34초 만에 재발).
+    try:
+        requests.post(ASK_URL.rsplit('/', 1)[0] + '/refresh', headers={'X-Ask-Key': ASK_KEY}, timeout=5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"신고 새로고침 실패(30초 뒤 반영됨): {e}")
     n = data.get('reports') or 1
     tail = f" (지금까지 {n}명)" if n > 1 else ""
     return f"알려주셔서 고맙습니다. 운영자가 확인합니다.{tail}\n\n\"{last['q'][:40]}\" 에 대한 답이 틀린 것으로 접수됐습니다."
