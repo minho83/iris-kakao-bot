@@ -472,6 +472,10 @@ def handle_ask(msg, chat_id, who='', room=''):
         return text
     except Exception as e:
         logger.error(f"질문 실패: {e}")
+        # 축소 모드 — GB10(!질문 두뇌)이 안 답하면 사이트 자료(아이템·퀘스트·기술·위키 검색)로라도 답한다. 방 대화·문장 만들기는 못 한다.
+        fallback = _site_get('/search', {'q': query, 'limit': 3})
+        if fallback and '불러오지 못했습니다' not in fallback:
+            return "(!질문 두뇌가 응답하지 않아 사이트 자료로만 찾았습니다)\n\n" + fallback
         return "지금은 답할 수 없습니다. 잠시 뒤 다시 시도해주세요."
 
 def _log_ask(chat_id, room, who, query, text, data):
