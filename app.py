@@ -1024,7 +1024,14 @@ def bot_test_loop():
             if not daily and _daily_check_due():
                 _start_daily_check(daily)
             res = requests.get(f"{BOT_TEST_URL}/next", headers=_match_headers(), timeout=8)
-            test = res.json().get('test') if res.ok else None
+            data = res.json() if res.ok else {}
+            test = data.get('test')
+            # 사이트가 남긴 운영자 알림(bench 회귀 등) — 정해 둔 방으로 보낸다. 방이 없으면 로그에만.
+            for text in data.get('alerts') or []:
+                chat = str(data.get('alert_chat_id') or '')
+                logger.info(f"사이트 알림: {text[:80]}")
+                if chat:
+                    send_reply(chat, text)
             if test:
                 last_seen = time.time()
                 logger.info(f"봇 테스트 #{test.get('id')}: {str(test.get('text'))[:60]}")
