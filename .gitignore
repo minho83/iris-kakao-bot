@@ -1,6 +1,10 @@
+*.bak*
+__pycache__/
 bot.log
-room_features.json
-test_match_local.py
+bot.log*
+bot_test_state.json
 notice_state.json
-rooms.json
+room_features.json
 room_names.json
+rooms.json
+test_match_local.py
