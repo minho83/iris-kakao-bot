@@ -53,8 +53,6 @@ MATCH_WEB_URL = 'https://milddok.cc/match/'
 # milddok.cc 사이트 봇 API (functions/api/bot/*) — 퀘스트 동선·길찾기
 # 응답의 text를 그대로 카톡에 뿌린다. 인증은 파티 API와 같은 MATCH_BOT_KEY.
 SITE_API_URL = os.getenv('SITE_API_URL', 'https://milddok.cc/api/bot')
-# 주간 뿔컷(발록뿔 기여) — 운영자가 !뿔컷 2100 으로 적고, 누구나 !뿔컷 으로 본다. 해석·저장은 사이트가 한다.
-HORN_CUTS_URL = os.getenv('HORN_CUTS_URL', 'https://milddok.cc/api/horn/cuts')
 
 # 방 대화 질문응답(RAG). GB10에 GPU가 있어 거기서 돈다 — 테일스케일로 붙는다.
 ASK_URL = os.getenv('ASK_URL', 'http://100.92.82.79:8899/ask')
@@ -412,7 +410,6 @@ def handle_help(chat_id):
     if room.get('퀘스트'):
         lines.append("!퀘스트 이름 — 동선·필요한 것·보상")
         lines.append("!주간퀘 5단계 — 주간 퀘스트 단계별 재료·적룡굴 드랍처 (단계 없이 치면 목록)")
-        lines.append("!뿔컷 — 발록뿔 기여 주간 뿔컷 추이 (운영자는 !뿔컷 2100 으로 기록)")
         lines.append("  예) !퀘스트 구피의부탁1")
         lines.append("!20단 — 그 단 필요 경험치·풀경험치 한 번 획득량 (!8단 20단 은 표)")
         lines.append("!단수 체력 300만 마력 150만 — 지금 몇 단인지")
@@ -553,27 +550,6 @@ def handle_weekly(msg):
     """!주간퀘 [N단계|최고급] — 주간 퀘스트 단계별 재료와 적룡굴 드랍처 (운영자 확인 표)"""
     query = msg[len('!주간퀘'):].strip()
     return _site_get('/weekly', {'q': query})
-
-
-def handle_horn_cut(msg, sender_name):
-    """!뿔컷 — 주간 뿔컷 목록. !뿔컷 2100 [9/7|이번주] [메모] — 기록(BOT_OWNER만).
-
-    숫자는 뿔 갯수다(사이트가 ×100 점수로 저장, '21만점'처럼 점을 붙이면 점수 그대로). 날짜 없으면 지난주.
-    해석은 사이트(src/horn/logic.js parseCutCommand) 하나가 한다 — 여기서 숫자를 만지지 않는다.
-    """
-    body = msg[len('!뿔컷'):].strip()
-    if body and sender_name != BOT_OWNER:
-        return "뿔컷 기록은 운영자만 할 수 있습니다. !뿔컷 만 치면 지금까지 기록을 보여드립니다."
-    try:
-        res = requests.post(HORN_CUTS_URL, json={'command': msg, 'who': sender_name},
-                            headers=_match_headers(), timeout=8)
-        data = res.json()
-    except Exception as e:
-        logger.error(f"horn cuts 실패: {e}")
-        return "사이트를 불러오지 못했습니다. 잠시 뒤 다시 시도해주세요."
-    if not data.get('ok'):
-        return data.get('error') or "요청을 처리하지 못했습니다."
-    return data.get('text') or "결과가 없습니다."
 
 
 def handle_quest(msg):
@@ -969,9 +945,7 @@ def webhook():
         if msg_stripped.startswith("!주간퀘") and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_weekly(msg_stripped))
             return jsonify({"status": "ok"})
-        if (msg_stripped == "!뿔컷" or msg_stripped.startswith("!뿔컷 ")) and feature_enabled(chat_id, '퀘스트'):
-            send_reply(chat_id, handle_horn_cut(msg_stripped, sender_name))
-            return jsonify({"status": "ok"})
+        # !뿔컷 은 2026-09-14 넣었다가 같은 날 뺐다 — 운영자 "카톡은 막고 내가 관리 페이지에서 넣겠다". /admin/ 뿔컷 기록 탭만.
         # !길찾기는 2026-09-08 뺐다 — 게임 안 길찾기가 잘 된다(운영자). handle_route는 남겨 둔다.
         if msg_stripped.startswith("!질문") and feature_enabled(chat_id, '질문'):
             send_reply(chat_id, handle_ask(msg_stripped, chat_id, sender_name, room))
