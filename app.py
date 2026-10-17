@@ -57,12 +57,6 @@ SITE_API_URL = os.getenv('SITE_API_URL', 'https://milddok.cc/api/bot')
 # 방 대화 질문응답(RAG). GB10에 GPU가 있어 거기서 돈다 — 테일스케일로 붙는다.
 ASK_URL = os.getenv('ASK_URL', 'http://100.92.82.79:8899/ask')
 ASK_KEY = os.getenv('ASK_KEY', '')
-# 틀린 답 신고 — `!틀림`을 치면 그 방의 직전 !질문 질문·답을 사이트에 올린다 (X-Bot-Key).
-ASK_REVIEW_URL = os.getenv('ASK_REVIEW_URL', 'https://milddok.cc/api/ask/review')
-# !질문 기록 — 답을 낼 때마다 사이트에 한 줄. /ask-admin/ 의 "많이 묻는 질문 top 20"이 여기서 나온다.
-ASK_LOG_URL = os.getenv('ASK_LOG_URL', 'https://milddok.cc/api/ask/log')
-# 방마다 마지막 !질문 — {chat_id: {q, a, who, ts}}. 재시작하면 비지만 신고는 대개 몇 분 안에 온다.
-LAST_ASK = {}
 # 방 사람 닉네임 — {chat_id: {이름: 마지막 본 때}}. "쿠모삐"처럼 닉네임 한 낱말만 치면 GB10의 사람 질문 차단이
 # 못 잡고(조사가 없다) 방 대화로 그 사람을 요약해 버렸다. 봇은 누가 방에 있는지 아니 여기서 먼저 막는다.
 NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'room_names.json')
@@ -139,21 +133,14 @@ def _admin_headers():
 
 
 # ── 유틸 ─────────────────────────────────────────────────
-# ── 봇 테스트 (스튜디오 "봇 테스트" 탭) ─────────────────────
-# 사이트가 테스트 요청을 쌓아 두면 여기서 몇 초마다 가져가 **실제 웹훅 코드**로 처리하고 답을 돌려준다.
-# 테스트 방(chat_id 'test')의 답은 카톡으로 보내지 않고 모아 둔다. 방 기능은 전부 켜진 것으로 친다.
-TEST_CHAT_ID = 'test'
-BOT_TEST_URL = os.getenv('BOT_TEST_URL', 'https://milddok.cc/api/bot-test')
-TEST_REPLIES = []
-
 # ── 운영자 알림 ──
 # 디스코드(밀떡봇 토큰, #자료수집) + 카톡(관리 화면에서 정한 방). 둘 중 하나가 죽어도 다른 쪽으로 간다.
-# 사이트가 남긴 알림(bot_alerts)도, 봇이 스스로 본 이상(GB10 무응답·사이트 무응답·야간 작업 누락)도 전부 여기로.
+# 봇이 스스로 본 이상(GB10 무응답·사이트 무응답·야간 작업 누락)을 여기로. (사이트가 남기던 알림(bot_alerts) 픽업은 2026-10-17 봇 품질 화면과 함께 뺐다.)
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN', '')
 DISCORD_ALERT_CHANNEL_ID = os.getenv('DISCORD_ALERT_CHANNEL_ID', '')
 HEARTBEAT_URL = os.getenv('HEARTBEAT_URL', 'https://milddok.cc/api/heartbeat')
 HEALTH_URL = os.getenv('HEALTH_URL', 'https://milddok.cc/api/health')
-ALERT_CHAT = {'id': ''}     # /api/bot-test/next 응답의 alert_chat_id를 받아 둔다
+ALERT_CHAT = {'id': ''}     # GET /api/heartbeat 응답의 alert_chat_id(관리 D1 bot_test_config)를 받아 둔다 — 2026-10-17까지는 /api/bot-test/next 가 줬다
 
 
 def alert(text):
@@ -175,9 +162,6 @@ def alert(text):
 
 def send_reply(chat_id, message):
     """Iris를 통해 채팅방에 메시지 전송"""
-    if str(chat_id) == TEST_CHAT_ID:
-        TEST_REPLIES.append(str(message))
-        return
     try:
         payload = {"type": "text", "room": str(chat_id), "data": message}
         resp = requests.post(f"{IRIS_URL}/reply", json=payload, timeout=5)
@@ -222,9 +206,7 @@ def _save_features(data):
 
 
 def room_features(chat_id):
-    """이 방에 켜진 기능 dict. 테스트 방(스튜디오 '봇 테스트')은 전부 켜진 것으로 본다."""
-    if str(chat_id) == TEST_CHAT_ID:
-        return {f: True for f in FEATURES}
+    """이 방에 켜진 기능 dict."""
     return _load_features().get(str(chat_id), {})
 
 
@@ -416,8 +398,6 @@ def handle_help(chat_id):
     if room.get('질문'):
         lines.append("!질문 궁금한 것 — 방에 쌓인 대화에서 찾아 답합니다")
         lines.append("  예) !질문 초보자 뭐부터 해야해요")
-        lines.append("!틀림 — 방금 !질문 답이 틀렸으면 이렇게 알려주세요 (운영자가 확인)")
-        lines.append("  예) !틀림 이벤트 얘긴데 낚시가 나옴")
     if room.get('매크로'):
         lines.append("!매크로 — 키셋팅 안내 (목록 보기)")
         lines.append("  예) !매크로 사냥")
@@ -469,8 +449,6 @@ def handle_ask(msg, chat_id, who='', room=''):
                            headers={'X-Ask-Key': ASK_KEY}, timeout=90)
         data = res.json()
         text = data.get('text') or "답을 만들지 못했습니다."
-        LAST_ASK[str(chat_id)] = {'q': query, 'a': text, 'who': who, 'room': room, 'ts': int(time.time() * 1000)}
-        _log_ask(chat_id, room, who, query, text, data)
         return text
     except Exception as e:
         logger.error(f"질문 실패: {e}")
@@ -482,59 +460,6 @@ def handle_ask(msg, chat_id, who='', room=''):
         if fallback and '불러오지 못했습니다' not in fallback and '검색 결과가 없습니다' not in fallback:
             return "(!질문 두뇌가 응답하지 않아 사이트 자료로만 찾았습니다)\n\n" + fallback
         return "지금은 답할 수 없습니다. 잠시 뒤 다시 시도해주세요."
-
-def _log_ask(chat_id, room, who, query, text, data):
-    """질문·답 한 줄을 사이트에 남긴다. 기록이 안 된다고 답을 잃으면 안 된다 — 조용히 넘긴다."""
-    if str(chat_id) == TEST_CHAT_ID:
-        return   # 스튜디오 '봇 테스트'는 top 20에 섞지 않는다
-    try:
-        requests.post(ASK_LOG_URL, json={
-            'chat_id': str(chat_id), 'room': room, 'who': who, 'question': query, 'answer': text,
-            'source': str(data.get('source') or ''), 'tool': str(data.get('tool') or ''),
-            'found': bool(data.get('found')),
-        }, headers=_match_headers(), timeout=5)
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"질문 기록 실패: {e}")
-
-
-_QWORDS = re.compile(r'^(어디|어떻|얼마|몇|뭐|무엇|왜|언제|누가|알려|해줘|해주|주세요|있나|있어|인가|나와|나오|사요|사나|해요|되나|되는|하나|할까|까지|부터|에서|으로|좋아|추천|필요|쓰나|써요|쓰는|하는)')
-
-
-def _fallback_terms(query):
-    """축소 모드용 검색어 — 통합 검색은 문장이 아니라 낱말을 받는다. 물음말·조사 붙은 토막을 빼고 앞 두 낱말만."""
-    words = [w for w in re.split(r'\s+', query.strip()) if w and not _QWORDS.match(w)]
-    return ' '.join(words[:2]) or query.strip()
-
-
-def handle_wrong(msg, chat_id, who=''):
-    """!틀림 [한마디] — 이 방의 직전 !질문 답이 틀렸다고 사이트에 알린다.
-
-    봇은 스스로 고치지 않는다. 운영자가 /ask-admin/ 에서 보고 위키·데이터·규칙 중 뭘 고칠지 정한다.
-    """
-    last = LAST_ASK.get(str(chat_id))
-    if not last:
-        return "최근에 답한 질문이 없습니다. !질문 뒤에 !틀림 을 쳐 주세요."
-    note = msg[len('!틀림'):].strip()
-    try:
-        res = requests.post(ASK_REVIEW_URL, json={
-            'chat_id': str(chat_id), 'room': last.get('room', ''), 'question': last['q'], 'answer': last['a'],
-            'reporter': who, 'note': note, 'asked_at': last['ts'],
-        }, headers=_match_headers(), timeout=8)
-        data = res.json()
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"틀림 신고 실패: {e}")
-        return "지금은 접수하지 못했습니다. 잠시 뒤 다시 시도해주세요."
-    if not data.get('ok'):
-        return data.get('error') or "접수하지 못했습니다."
-    # GB10에 바로 알린다 — 안 알리면 30초까지 같은 답이 또 나간다(2026-09-13 '50단' 34초 만에 재발).
-    try:
-        requests.post(ASK_URL.rsplit('/', 1)[0] + '/refresh', headers={'X-Ask-Key': ASK_KEY}, timeout=5)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"신고 새로고침 실패(30초 뒤 반영됨): {e}")
-    n = data.get('reports') or 1
-    tail = f" (지금까지 {n}명)" if n > 1 else ""
-    return f"알려주셔서 고맙습니다. 운영자가 확인합니다.{tail}\n\n\"{last['q'][:40]}\" 에 대한 답이 틀린 것으로 접수됐습니다."
-
 
 def handle_macro(msg):
     """!매크로 [사냥/이동/…] — 키셋팅을 글로 안내
@@ -950,9 +875,7 @@ def webhook():
         if msg_stripped.startswith("!질문") and feature_enabled(chat_id, '질문'):
             send_reply(chat_id, handle_ask(msg_stripped, chat_id, sender_name, room))
             return jsonify({"status": "ok"})
-        if (msg_stripped == "!틀림" or msg_stripped.startswith("!틀림 ")) and feature_enabled(chat_id, '질문'):
-            send_reply(chat_id, handle_wrong(msg_stripped, chat_id, sender_name))
-            return jsonify({"status": "ok"})
+        # !틀림(틀린 답 신고)은 2026-10-17 운영자가 봇 품질 화면과 함께 뺐다.
         if msg_stripped.startswith("!매크로") and feature_enabled(chat_id, '매크로'):
             send_reply(chat_id, handle_macro(msg_stripped))
             return jsonify({"status": "ok"})
@@ -975,93 +898,6 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"status": "error"}), 500
-
-
-BOT_TEST_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot_test_state.json')
-DAILY_CHECK_HOUR = 7   # 매일 이 시(KST) 이후 처음 도는 회차에 점검 목록을 돌린다
-
-
-def _passes(reply, expect):
-    """점검 판정 — 사이트 src/bot-test/logic.js passes()와 같은 규칙. 띄어쓰기 지우고 포함 여부, `|`는 그중 하나."""
-    alts = [re.sub(r'\s+', '', a) for a in str(expect or '').split('|')]
-    alts = [a for a in alts if a]
-    if not alts:
-        return None
-    r = re.sub(r'\s+', '', str(reply or ''))
-    return any(a in r for a in alts)
-
-
-def _run_bot_test(test):
-    """테스트 하나를 웹훅과 같은 길로 돌린다. Flask test client라 실제 요청과 같은 코드가 돈다."""
-    TEST_REPLIES.clear()
-    payload = {
-        'msg': test.get('text', ''), 'room': '봇 테스트', 'sender': f"{test.get('sender') or '운영자'}/테스트",
-        'json': {'type': '1', 'chat_id': TEST_CHAT_ID, 'user_id': 'test', 'id': str(test.get('id')),
-                 'v': '{"isMine":false}'},
-    }
-    try:
-        with app.test_client() as c:
-            c.post('/webhook', json=payload)
-    except Exception as e:  # noqa: BLE001
-        TEST_REPLIES.append(f"(봇 오류: {e})")
-    reply = '\n\n'.join(TEST_REPLIES)
-    try:
-        requests.post(f"{BOT_TEST_URL}/{test.get('id')}", json={'reply': reply}, headers=_match_headers(), timeout=8)
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"봇 테스트 결과 전송 실패: {e}")
-    return reply
-
-
-def _daily_check_due():
-    """오늘 아직 안 돌렸고 시각이 지났으면 True. 상태 파일에 날짜를 적어 재시작해도 하루 한 번만."""
-    now = datetime.now(KST)
-    if now.hour < DAILY_CHECK_HOUR:
-        return False
-    today = now.strftime('%Y-%m-%d')
-    try:
-        with open(BOT_TEST_STATE_FILE, encoding='utf-8') as f:
-            if json.load(f).get('daily') == today:
-                return False
-    except (OSError, ValueError):
-        pass
-    try:
-        with open(BOT_TEST_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'daily': today}, f)
-    except OSError as e:
-        logger.error(f"봇 점검 상태 저장 오류: {e}")
-    return True
-
-
-def _start_daily_check(state):
-    """사이트에 점검 목록을 줄 세워 달라고 한다. 이후 /next로 하나씩 내려온다."""
-    try:
-        res = requests.post(f"{BOT_TEST_URL}/run", json={'run': 'daily'}, headers=_match_headers(), timeout=8)
-        data = res.json() if res.ok else {}
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"매일 점검 시작 실패: {e}")
-        return
-    if not data.get('count'):
-        logger.info("매일 점검: 점검 목록이 비어 있어 건너뜀")
-        return
-    state.update({'run': data.get('run'), 'alert': str(data.get('alert_chat_id') or ''),
-                  'total': int(data.get('count') or 0), 'fails': []})
-    logger.info(f"매일 점검 시작: {state['total']}개, 알림 방 {state['alert'] or '없음'}")
-
-
-def _finish_daily_check(state):
-    """회차가 다 돌았다. 어긋난 게 있고 알릴 방이 정해져 있으면 카톡으로 보낸다(전부 통과면 조용히)."""
-    total, fails, alert = state.get('total', 0), state.get('fails', []), state.get('alert', '')
-    state.clear()
-    logger.info(f"매일 점검 끝: {total}개 중 {len(fails)}개 어긋남")
-    if not fails or not alert:
-        return
-    lines = [f"[봇 자동 점검] {datetime.now(KST).strftime('%m/%d %H:%M')}", f"{total}개 중 {len(fails)}개 어긋남"]
-    for text, expect in fails[:10]:
-        lines.append(f"✗ {text} → '{expect}' 없음")
-    if len(fails) > 10:
-        lines.append(f"… 외 {len(fails) - 10}개")
-    lines.append("확인: https://milddok.cc/wiki-studio/ (봇 테스트 탭)")
-    send_reply(alert, '\n'.join(lines))
 
 
 def watchdog_loop():
@@ -1101,6 +937,8 @@ def watchdog_loop():
         # GB10 야간 작업 — 심장박동이 오래됐나 (하루 한 번만 알림)
         try:
             d = requests.get(HEARTBEAT_URL, headers=_match_headers(), timeout=10).json()
+            if 'alert_chat_id' in d:
+                ALERT_CHAT['id'] = str(d.get('alert_chat_id') or '')
             now = int(d.get('now') or time.time() * 1000)
             beats = {b['key']: int(b['at']) for b in d.get('beats', [])}
             for key, label in (('gb10-daily', '매일 색인(daily.sh)'), ('gb10-bench', '매일 bench')):
@@ -1115,37 +953,7 @@ def watchdog_loop():
         time.sleep(60)
 
 
-def bot_test_loop():
-    last_seen = 0.0
-    daily = {}    # 도는 중인 매일 점검 회차 {run, alert, total, fails}
-    while True:
-        try:
-            if not daily and _daily_check_due():
-                _start_daily_check(daily)
-            res = requests.get(f"{BOT_TEST_URL}/next", headers=_match_headers(), timeout=8)
-            data = res.json() if res.ok else {}
-            test = data.get('test')
-            if 'alert_chat_id' in data:
-                ALERT_CHAT['id'] = str(data.get('alert_chat_id') or '')
-            # 사이트가 남긴 운영자 알림(bench 회귀 등) — 디스코드 + 정해 둔 방으로.
-            for text in data.get('alerts') or []:
-                alert(text)
-            if test:
-                last_seen = time.time()
-                logger.info(f"봇 테스트 #{test.get('id')}: {str(test.get('text'))[:60]}")
-                reply = _run_bot_test(test)
-                if daily and test.get('run') == daily.get('run') and _passes(reply, test.get('expect')) is False:
-                    daily['fails'].append((test.get('text'), test.get('expect')))
-                continue          # 하나 끝났으면 바로 다음 것을 본다
-            if daily:
-                _finish_daily_check(daily)
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"봇 테스트 폴링 실패: {e}")
-        time.sleep(3 if time.time() - last_seen < 600 else 30)
-
-
 if __name__ == '__main__':
-    threading.Thread(target=bot_test_loop, name='bot-test', daemon=True).start()
     threading.Thread(target=watchdog_loop, name='watchdog', daemon=True).start()
     room_notices.start()
     app.run(host='0.0.0.0', port=5000)
