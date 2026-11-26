@@ -397,6 +397,7 @@ def handle_help(chat_id):
         lines.append("  예) !길찾기 밀레스마을 나겔링마을")
         lines.append("!20단 — 그 단 필요 경험치·풀경험치 한 번 획득량 (!8단 20단 은 표)")
         lines.append("!단수 체력 300만 마력 150만 — 지금 몇 단인지")
+        lines.append("!샷비 마력 45만 메디 7 — 법사 메테오로 백작유리드 고층 한 방에 필요한 마력·라르")
     if room.get('질문'):
         lines.append("!질문 궁금한 것 — 방에 쌓인 대화에서 찾아 답합니다")
         lines.append("  예) !질문 초보자 뭐부터 해야해요")
@@ -518,6 +519,35 @@ def handle_dansu(msg):
         return _site_get('/dansu', {'from': int(m.group(1)), 'to': int(m.group(2))})
     return _site_get('/dansu', {'n': int(m.group(1))})
 
+
+# `!샷비 마력 45만 메디 7` — 법사 메테오로 백작유리드 10·11층 암속 몬스터 한 방에 마력·라르가 얼마나 필요한가.
+# 계산은 사이트(/api/bot/shot = 라르 계산기 "메테오 샷비" 칸과 같은 함수). '순수 40만'·'나르없이'를 덧붙여도 된다.
+SHOT_HELP = "예) !샷비 마력 45만 메디 7\n(덧붙이기: 순수 40만 · 나르없이)"
+_SHOT_NUM = r'([\d,]+(?:\.\d+)?(?:만|억)?)'
+
+
+def handle_shot(msg):
+    body = msg[len("!샷비"):].strip()
+    if not body:
+        return SHOT_HELP
+    rest = body
+    pure_m = re.search(r'순수\s*(?:마력)?\s*' + _SHOT_NUM, rest)
+    if pure_m:
+        rest = rest[:pure_m.start()] + ' ' + rest[pure_m.end():]
+    medi_m = re.search(r'메디(?:테이션)?\s*(\d{1,2})', rest)
+    if medi_m:
+        rest = rest[:medi_m.start()] + ' ' + rest[medi_m.end():]
+    nums = re.findall(_SHOT_NUM, rest)
+    mp = _korean_number(nums[0]) if nums else None
+    medi = int(medi_m.group(1)) if medi_m else (_korean_number(nums[1]) if len(nums) > 1 else None)
+    if mp is None or medi is None:
+        return "마력과 메디테이션 단계를 적어주세요.\n" + SHOT_HELP
+    params = {'mp': mp, 'medi': medi}
+    if pure_m and _korean_number(pure_m.group(1)) is not None:
+        params['pure'] = _korean_number(pure_m.group(1))
+    if re.search(r'나르\s*(?:없이|안|x)|노나르', body, re.I):
+        params['nar'] = 0
+    return _site_get('/shot', params)
 
 def handle_route(msg):
     """!길찾기 [출발] [도착] — 포탈·대륙지도를 아우른 최단 경로
@@ -862,6 +892,9 @@ def webhook():
             return jsonify({"status": "ok"})
         if msg_stripped.startswith("!업데이트") and feature_enabled(chat_id, '업데이트'):
             send_reply(chat_id, handle_update(msg_stripped))
+            return jsonify({"status": "ok"})
+        if msg_stripped.startswith("!샷비") and feature_enabled(chat_id, '퀘스트'):
+            send_reply(chat_id, handle_shot(msg_stripped))
             return jsonify({"status": "ok"})
         if (DANSU_RE.match(msg_stripped) or msg_stripped.startswith("!단수")) and feature_enabled(chat_id, '퀘스트'):
             send_reply(chat_id, handle_dansu(msg_stripped))
